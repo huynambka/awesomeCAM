@@ -3,7 +3,7 @@
 Minimal KernelSU/Magisk-style SELinux module for awesomeCAM native injector.
 
 ## What this allows
-- `su` ptrace attach to `cameraserver` for native injector.
+- `su` ptrace attach to and restart `cameraserver` for native injector upgrades.
 - `cameraserver` load `/data/camera/*.so` labeled `system_lib_file`.
 - `cameraserver` register `Video2CameraService`.
 - awesomeCAM app find `Video2CameraService`.

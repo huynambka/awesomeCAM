@@ -12,6 +12,7 @@
 #include <string>
 #include <vector>
 
+#include "ready_frame_cache.h"
 #include "video2camera_ipc.h"
 #include "video2camera_ndk.h"
 
@@ -259,12 +260,19 @@ bool EnsureServiceClass() {
 
 void PublishDecodedI420Frame(int32_t width, int32_t height, std::vector<uint8_t> &&bytes) {
   if (width <= 0 || height <= 0 || bytes.empty()) return;
+  uint64_t generation = 0;
+  {
+    std::lock_guard<std::mutex> lock(g_shared_frame.mutex);
+    generation = g_shared_frame.generation + 1;
+  }
+  PublishReadyI420Source(width, height, bytes, generation);
+
   std::lock_guard<std::mutex> lock(g_shared_frame.mutex);
   g_shared_frame.width = width;
   g_shared_frame.height = height;
   g_shared_frame.format = kFrameFormatI420;
   g_shared_frame.bytes = std::move(bytes);
-  g_shared_frame.generation += 1;
+  g_shared_frame.generation = generation;
   g_shared_frame.push_count += 1;
   if (g_shared_frame.push_count <= 5 || (g_shared_frame.push_count % 120) == 0) {
     LOGI("Video2CameraService publish decoded frame #%llu %dx%d bytes=%zu gen=%llu",
@@ -648,6 +656,7 @@ bool PeekLatestBinderFrameState(BinderFrameState *out) {
 }
 
 void ClearLatestBinderFrame() {
+  ClearReadyFrameCache();
   std::lock_guard<std::mutex> lock(g_shared_frame.mutex);
   g_shared_frame.width = 0;
   g_shared_frame.height = 0;

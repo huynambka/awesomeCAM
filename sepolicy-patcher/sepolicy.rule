@@ -1,16 +1,27 @@
 # awesomeCAM minimal native-injector policy.
-# No Frida policy. No broad domain/domain execmem.
+# No Frida policy. Only cameraserver gets execmem for shadowhook trampolines.
 
 type awesomecam_source_file { file_type mlstrustedobject }
+type awesomecam_config_file { file_type mlstrustedobject }
 
-# Native injector runs as su and ptrace-attaches to cameraserver.
-allow su cameraserver process { ptrace getattr sigchld }
+# Native injector runs as su, ptrace-attaches to cameraserver, and can restart
+# cameraserver during upgrade/test so dlopen reloads the new /data/camera/libhook.so.
+allow su cameraserver process { ptrace getattr sigchld signal sigkill }
+# KernelSU su also stages/labels/reads /data/camera files during install/test.
+allow su system_data_root_file dir search
+allow su system_data_file dir { search open read getattr write add_name remove_name }
+allow su system_data_file file { create open read write getattr setattr append map unlink rename ioctl lock }
+allow su system_lib_file file { create open read write getattr setattr append map unlink rename ioctl lock execute }
+allow su awesomecam_source_file file { open read getattr map ioctl lock }
+allow su awesomecam_config_file file { create open read write getattr setattr append map ioctl lock }
 
 # cameraserver loads payloads from /data/camera.
 # /data/camera directory is system_data_file, *.so are system_lib_file.
 allow cameraserver system_data_root_file dir search
 allow cameraserver system_data_file dir { search open read getattr }
 allow cameraserver system_lib_file file { open read getattr map execute }
+# shadowhook allocates RX trampoline pages inside cameraserver.
+allow cameraserver cameraserver process execmem
 
 # cameraserver registers Video2CameraService.
 allow cameraserver default_android_service service_manager add
@@ -20,7 +31,9 @@ allow untrusted_app default_android_service service_manager find
 
 # Native-player path:
 # cameraserver opens /data/camera/input.mp4 and passes fd to media.extractor.
-allow cameraserver awesomecam_source_file file { open read getattr map }
+allow cameraserver awesomecam_source_file file { open read getattr map ioctl lock }
+# cameraserver scanner saves discovered offsets here.
+allow cameraserver awesomecam_config_file file { create open read write getattr setattr append map }
 allow cameraserver mediaextractor_service service_manager find
 allow cameraserver mediaextractor binder { call transfer }
 allow mediaextractor cameraserver binder transfer
@@ -32,4 +45,4 @@ allow mediaextractor awesomecam_source_file file { open read getattr map ioctl l
 # App only checks/reads /data/camera/input.mp4.
 allow untrusted_app system_data_root_file dir search
 allow untrusted_app system_data_file dir { search open read getattr }
-allow untrusted_app awesomecam_source_file file { open read getattr map }
+allow untrusted_app awesomecam_source_file file { open read getattr map ioctl lock }

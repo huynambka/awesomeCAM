@@ -21,6 +21,7 @@ set_target_properties(injector_helper PROPERTIES
 add_library(hook SHARED
     hook.cpp
     libyuv_runtime.cpp
+    ready_frame_cache.cpp
     video2camera_ndk.cpp
     video2camera_service.cpp
     video2camera_player.cpp
@@ -39,8 +40,10 @@ find_library(nativewindow-lib nativewindow)
 
 target_include_directories(injector_helper PRIVATE "${CMAKE_SOURCE_DIR}")
 target_compile_options(injector_helper PRIVATE -ffunction-sections -fdata-sections -fno-exceptions -fno-rtti)
-target_link_options(injector_helper PRIVATE -Wl,--gc-sections)
+target_link_options(injector_helper PRIVATE -Wl,--gc-sections -Wl,-z,max-page-size=16384)
 
 target_link_libraries(injector_helper ${log-lib} ${dl-lib} ${m-lib})
+target_link_options(hook PRIVATE -Wl,-z,max-page-size=16384)
+target_link_options(streamclient PRIVATE -Wl,-z,max-page-size=16384)
 target_link_libraries(hook shadowhook::shadowhook ${log-lib} ${dl-lib} ${mediandk-lib} ${nativewindow-lib})
 target_link_libraries(streamclient ${log-lib} ${dl-lib})

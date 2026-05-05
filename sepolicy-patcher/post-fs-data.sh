@@ -31,6 +31,13 @@ if [ -f "$CAMDIR/input.mp4" ]; then
   logi "relabeled $CAMDIR/input.mp4 -> awesomecam_source_file"
 fi
 
+# Offset scanner cache. cameraserver writes this after signature scan.
+touch "$CAMDIR/awesomecam_offsets.conf" 2>/dev/null || true
+chmod 0666 "$CAMDIR/awesomecam_offsets.conf" 2>/dev/null || true
+chown root:root "$CAMDIR/awesomecam_offsets.conf" 2>/dev/null || true
+chcon u:object_r:awesomecam_config_file:s0 "$CAMDIR/awesomecam_offsets.conf" 2>/dev/null || true
+logi "prepared $CAMDIR/awesomecam_offsets.conf -> awesomecam_config_file"
+
 # Payload libraries: dlopen/map/execute by cameraserver.
 for so in "$CAMDIR"/*.so; do
   [ -e "$so" ] || continue

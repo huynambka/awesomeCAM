@@ -3,7 +3,7 @@
     <string name="miuix_badge">MIUIX shell</string>
     <string name="miuix_home_subtitle">Cleaner control surface for cameraserver injection, MP4 feeding, and live diagnostics.</string>
     <string name="miuix_pipeline_title">Pipeline overview</string>
-    <string name="miuix_pipeline_subtitle">Inject the payload, stream decoded MP4 frames, and inspect status or logcat in the dedicated telemetry screen.</string>
+    <string name="miuix_pipeline_subtitle">Status auto-scrolls to the latest event. Inject payload, start native MP4 feed, then inspect perf logs.</string>
     <string name="miuix_logs_card_title">Live telemetry</string>
     <string name="miuix_logs_card_subtitle">The status block and logcat block now live in a separate screen so the main control surface stays clean.</string>
     <string name="summary_placeholder">No execution status yet.</string>

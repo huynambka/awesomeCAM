@@ -10,6 +10,7 @@
 #include <unistd.h>
 
 #include <algorithm>
+#include <atomic>
 #include <chrono>
 #include <mutex>
 #include <string>
@@ -29,9 +30,11 @@ namespace awesomecam {
 namespace {
 
 constexpr int64_t kCodecTimeoutUs = 10000;
-constexpr int kImageReaderMaxImages = 4;
-constexpr int kAcquireImageRetries = 20;
-constexpr auto kAcquireImageRetrySleep = std::chrono::milliseconds(2);
+constexpr int32_t kColorFormatYuv420Planar = 19;
+constexpr int32_t kColorFormatYuv420SemiPlanar = 21;
+constexpr int32_t kColorFormatYuv420Flexible = 0x7F420888;
+constexpr int32_t kColorFormatQcomYuv420SemiPlanar = 0x7FA30C00;
+constexpr int32_t kColorFormatQcomYuv420SemiPlanar32m = 0x7FA30C04;
 
 struct PlaybackState {
   std::mutex mutex;
@@ -43,12 +46,31 @@ struct PlaybackState {
 };
 
 PlaybackState g_playback_state;
+std::atomic<uint64_t> g_image_to_i420_perf_count{0};
+std::atomic<uint64_t> g_codec_to_i420_perf_count{0};
+
+double duration_ms(std::chrono::steady_clock::time_point start,
+                   std::chrono::steady_clock::time_point end) {
+  return std::chrono::duration<double, std::milli>(end - start).count();
+}
 
 struct ScopedFd {
   int fd = -1;
   ~ScopedFd() {
     if (fd >= 0) close(fd);
   }
+};
+
+struct CodecOutputLayout {
+  int32_t width = 0;
+  int32_t height = 0;
+  int32_t crop_left = 0;
+  int32_t crop_top = 0;
+  int32_t crop_right = -1;
+  int32_t crop_bottom = -1;
+  int32_t stride = 0;
+  int32_t slice_height = 0;
+  int32_t color_format = 0;
 };
 
 bool should_stop_locked(uint64_t session_id) {
@@ -88,6 +110,7 @@ bool ConvertImageToI420(AImage *image, std::vector<uint8_t> *out, int32_t *out_w
   if (image == nullptr || out == nullptr || out_width == nullptr || out_height == nullptr) {
     return false;
   }
+  const auto perf_start = std::chrono::steady_clock::now();
 
   int32_t width = 0;
   int32_t height = 0;
@@ -105,7 +128,7 @@ bool ConvertImageToI420(AImage *image, std::vector<uint8_t> *out, int32_t *out_w
   const int chroma_height = (height + 1) / 2;
   const size_t y_size = static_cast<size_t>(width) * height;
   const size_t chroma_size = static_cast<size_t>(chroma_width) * chroma_height;
-  out->assign(y_size + 2 * chroma_size, 0);
+  out->resize(y_size + 2 * chroma_size);
 
   uint8_t *dst_y = out->data();
   uint8_t *dst_u = dst_y + y_size;
@@ -127,17 +150,23 @@ bool ConvertImageToI420(AImage *image, std::vector<uint8_t> *out, int32_t *out_w
     }
   }
 
+  bool libyuv_used = false;
   if (pixel_stride[1] == pixel_stride[2] &&
-      LibYuvAndroid420ToI420(src_data[0], row_stride[0],
-                             src_data[1], row_stride[1],
-                             src_data[2], row_stride[2],
-                             pixel_stride[1],
-                             dst_y, width,
-                             dst_u, chroma_width,
-                             dst_v, chroma_width,
-                             width, height)) {
+      LibYuvAndroid420ToI420(src_data[0], row_stride[0], src_data[1],
+                             row_stride[1], src_data[2], row_stride[2],
+                             pixel_stride[1], dst_y, width, dst_u, chroma_width,
+                             dst_v, chroma_width, width, height)) {
+    libyuv_used = true;
     *out_width = width;
     *out_height = height;
+    const uint64_t count =
+        g_image_to_i420_perf_count.fetch_add(1, std::memory_order_relaxed) + 1;
+    if (count <= 5 || (count % 120) == 0) {
+      LOGI("Perf AImageToI420 #%llu %dx%d libyuv=%d ms=%.3f",
+           static_cast<unsigned long long>(count), width, height,
+           libyuv_used ? 1 : 0,
+           duration_ms(perf_start, std::chrono::steady_clock::now()));
+    }
     return true;
   }
 
@@ -149,22 +178,212 @@ bool ConvertImageToI420(AImage *image, std::vector<uint8_t> *out, int32_t *out_w
 
   *out_width = width;
   *out_height = height;
+  const uint64_t count =
+      g_image_to_i420_perf_count.fetch_add(1, std::memory_order_relaxed) + 1;
+  if (count <= 5 || (count % 120) == 0) {
+    LOGI("Perf AImageToI420 #%llu %dx%d libyuv=%d ms=%.3f",
+         static_cast<unsigned long long>(count), width, height, 0,
+         duration_ms(perf_start, std::chrono::steady_clock::now()));
+  }
   return true;
 }
 
-bool AcquireLatestImage(AImageReader *reader, uint64_t session_id, AImage **out_image) {
-  if (reader == nullptr || out_image == nullptr) return false;
-  *out_image = nullptr;
-  for (int attempt = 0; attempt < kAcquireImageRetries && !ShouldStop(session_id); ++attempt) {
-    media_status_t status = AImageReader_acquireLatestImage(reader, out_image);
-    if (status == AMEDIA_OK && *out_image != nullptr) return true;
-    if (status != AMEDIA_IMGREADER_NO_BUFFER_AVAILABLE) {
-      LOGW("NativePlayback: acquireLatestImage failed status=%d", status);
-      return false;
-    }
-    std::this_thread::sleep_for(kAcquireImageRetrySleep);
+size_t i420_size_for(int32_t width, int32_t height) {
+  if (width <= 0 || height <= 0) return 0;
+  return static_cast<size_t>(width) * height +
+         2 * static_cast<size_t>((width + 1) / 2) * ((height + 1) / 2);
+}
+
+void CopyPlaneCrop(uint8_t *dst, int dst_stride, const uint8_t *src,
+                   int src_stride, int width, int height) {
+  for (int y = 0; y < height; ++y) {
+    memcpy(dst + static_cast<size_t>(y) * dst_stride,
+           src + static_cast<size_t>(y) * src_stride,
+           static_cast<size_t>(width));
   }
-  return false;
+}
+
+void SplitNv12Crop(uint8_t *dst_u, uint8_t *dst_v, int dst_stride,
+                   const uint8_t *src_uv, int src_stride, int width,
+                   int height) {
+  for (int y = 0; y < height; ++y) {
+    const uint8_t *src_row = src_uv + static_cast<size_t>(y) * src_stride;
+    uint8_t *u_row = dst_u + static_cast<size_t>(y) * dst_stride;
+    uint8_t *v_row = dst_v + static_cast<size_t>(y) * dst_stride;
+    for (int x = 0; x < width; ++x) {
+      u_row[x] = src_row[x * 2 + 0];
+      v_row[x] = src_row[x * 2 + 1];
+    }
+  }
+}
+
+void SplitNv21Crop(uint8_t *dst_u, uint8_t *dst_v, int dst_stride,
+                   const uint8_t *src_vu, int src_stride, int width,
+                   int height) {
+  for (int y = 0; y < height; ++y) {
+    const uint8_t *src_row = src_vu + static_cast<size_t>(y) * src_stride;
+    uint8_t *u_row = dst_u + static_cast<size_t>(y) * dst_stride;
+    uint8_t *v_row = dst_v + static_cast<size_t>(y) * dst_stride;
+    for (int x = 0; x < width; ++x) {
+      v_row[x] = src_row[x * 2 + 0];
+      u_row[x] = src_row[x * 2 + 1];
+    }
+  }
+}
+
+int32_t GetFormatInt32(AMediaFormat *format, const char *key, int32_t fallback) {
+  int32_t value = fallback;
+  if (format != nullptr) AMediaFormat_getInt32(format, key, &value);
+  return value;
+}
+
+void UpdateCodecOutputLayout(AMediaFormat *format, CodecOutputLayout *layout) {
+  if (format == nullptr || layout == nullptr) return;
+
+  layout->width = GetFormatInt32(format, AMEDIAFORMAT_KEY_WIDTH, layout->width);
+  layout->height = GetFormatInt32(format, AMEDIAFORMAT_KEY_HEIGHT, layout->height);
+  layout->stride = GetFormatInt32(format, AMEDIAFORMAT_KEY_STRIDE,
+                                  layout->stride > 0 ? layout->stride : layout->width);
+  layout->slice_height = GetFormatInt32(
+      format, AMEDIAFORMAT_KEY_SLICE_HEIGHT,
+      layout->slice_height > 0 ? layout->slice_height : layout->height);
+  layout->color_format = GetFormatInt32(format, AMEDIAFORMAT_KEY_COLOR_FORMAT,
+                                        layout->color_format);
+
+  layout->crop_left = GetFormatInt32(format, "crop-left", 0);
+  layout->crop_top = GetFormatInt32(format, "crop-top", 0);
+  layout->crop_right = GetFormatInt32(
+      format, "crop-right", layout->width > 0 ? layout->width - 1 : -1);
+  layout->crop_bottom = GetFormatInt32(
+      format, "crop-bottom", layout->height > 0 ? layout->height - 1 : -1);
+
+  if (layout->stride <= 0) layout->stride = layout->width;
+  if (layout->slice_height <= 0) layout->slice_height = layout->height;
+  layout->crop_left = std::max<int32_t>(0, layout->crop_left);
+  layout->crop_top = std::max<int32_t>(0, layout->crop_top);
+  if (layout->crop_right < layout->crop_left && layout->width > 0) {
+    layout->crop_right = layout->width - 1;
+  }
+  if (layout->crop_bottom < layout->crop_top && layout->height > 0) {
+    layout->crop_bottom = layout->height - 1;
+  }
+
+  const char *desc = AMediaFormat_toString(format);
+  LOGI("NativePlayback: CPU output layout fmt=%#x %dx%d crop=(%d,%d)-(%d,%d) stride=%d slice=%d raw=%s",
+       layout->color_format, layout->width, layout->height, layout->crop_left,
+       layout->crop_top, layout->crop_right, layout->crop_bottom, layout->stride,
+       layout->slice_height, desc != nullptr ? desc : "(null)");
+}
+
+bool ConvertCodecOutputToI420(const uint8_t *src, size_t src_size,
+                              const CodecOutputLayout &layout,
+                              std::vector<uint8_t> *out, int32_t *out_width,
+                              int32_t *out_height) {
+  if (src == nullptr || src_size == 0 || out == nullptr || out_width == nullptr ||
+      out_height == nullptr || layout.width <= 0 || layout.height <= 0 ||
+      layout.stride <= 0 || layout.slice_height <= 0) {
+    return false;
+  }
+
+  const auto perf_start = std::chrono::steady_clock::now();
+  int32_t width = layout.crop_right - layout.crop_left + 1;
+  int32_t height = layout.crop_bottom - layout.crop_top + 1;
+  if (width <= 0 || height <= 0) {
+    width = layout.width;
+    height = layout.height;
+  }
+  // Keep I420 chroma math simple and decoder-compatible.
+  width &= ~1;
+  height &= ~1;
+  if (width <= 0 || height <= 0) return false;
+
+  const int32_t crop_left = layout.crop_left & ~1;
+  const int32_t crop_top = layout.crop_top & ~1;
+  const int32_t chroma_width = (width + 1) / 2;
+  const int32_t chroma_height = (height + 1) / 2;
+  const size_t dst_size = i420_size_for(width, height);
+  out->assign(dst_size, 0);
+
+  uint8_t *dst_y = out->data();
+  uint8_t *dst_u = dst_y + static_cast<size_t>(width) * height;
+  uint8_t *dst_v = dst_u + static_cast<size_t>(chroma_width) * chroma_height;
+
+  const size_t y_plane_size =
+      static_cast<size_t>(layout.stride) * layout.slice_height;
+  if (src_size < y_plane_size) return false;
+
+  const uint8_t *src_y =
+      src + static_cast<size_t>(crop_top) * layout.stride + crop_left;
+  CopyPlaneCrop(dst_y, width, src_y, layout.stride, width, height);
+
+  const bool planar =
+      layout.color_format == kColorFormatYuv420Planar;
+  const bool semiplanar =
+      layout.color_format == kColorFormatYuv420SemiPlanar ||
+      layout.color_format == kColorFormatYuv420Flexible ||
+      layout.color_format == kColorFormatQcomYuv420SemiPlanar ||
+      layout.color_format == kColorFormatQcomYuv420SemiPlanar32m ||
+      layout.color_format == 0;
+
+  if (planar) {
+    const int32_t chroma_stride = std::max<int32_t>(1, layout.stride / 2);
+    const int32_t chroma_slice = std::max<int32_t>(1, layout.slice_height / 2);
+    const size_t u_offset = y_plane_size;
+    const size_t v_offset = u_offset + static_cast<size_t>(chroma_stride) * chroma_slice;
+    const size_t needed = v_offset + static_cast<size_t>(chroma_stride) * chroma_height;
+    if (src_size < needed) return false;
+    const uint8_t *src_u = src + u_offset +
+                           static_cast<size_t>(crop_top / 2) * chroma_stride +
+                           crop_left / 2;
+    const uint8_t *src_v = src + v_offset +
+                           static_cast<size_t>(crop_top / 2) * chroma_stride +
+                           crop_left / 2;
+    CopyPlaneCrop(dst_u, chroma_width, src_u, chroma_stride, chroma_width,
+                  chroma_height);
+    CopyPlaneCrop(dst_v, chroma_width, src_v, chroma_stride, chroma_width,
+                  chroma_height);
+  } else if (semiplanar) {
+    const size_t uv_offset = y_plane_size;
+    const size_t needed =
+        uv_offset + static_cast<size_t>(layout.stride) * chroma_height;
+    if (src_size < needed) return false;
+    const uint8_t *src_uv = src + uv_offset +
+                            static_cast<size_t>(crop_top / 2) * layout.stride +
+                            crop_left;
+    // Google HW decoder CPU output is NV12 for COLOR_FormatYUV420Flexible /
+    // semi-planar on Pixel. If color looks purple/green later, flip this one
+    // call to SplitNv21Crop.
+    SplitNv12Crop(dst_u, dst_v, chroma_width, src_uv, layout.stride,
+                  chroma_width, chroma_height);
+  } else {
+    static std::atomic<uint64_t> unknown_count{0};
+    const uint64_t count = unknown_count.fetch_add(1, std::memory_order_relaxed) + 1;
+    if (count <= 5) {
+      LOGW("NativePlayback: unknown CPU color format %#x; trying NV12 layout",
+           layout.color_format);
+    }
+    const size_t uv_offset = y_plane_size;
+    const size_t needed =
+        uv_offset + static_cast<size_t>(layout.stride) * chroma_height;
+    if (src_size < needed) return false;
+    const uint8_t *src_uv = src + uv_offset +
+                            static_cast<size_t>(crop_top / 2) * layout.stride +
+                            crop_left;
+    SplitNv12Crop(dst_u, dst_v, chroma_width, src_uv, layout.stride,
+                  chroma_width, chroma_height);
+  }
+
+  *out_width = width;
+  *out_height = height;
+  const uint64_t count =
+      g_codec_to_i420_perf_count.fetch_add(1, std::memory_order_relaxed) + 1;
+  if (count <= 5 || (count % 120) == 0) {
+    LOGI("Perf CodecOutputToI420 #%llu %dx%d fmt=%#x stride=%d slice=%d ms=%.3f",
+         static_cast<unsigned long long>(count), width, height,
+         layout.color_format, layout.stride, layout.slice_height,
+         duration_ms(perf_start, std::chrono::steady_clock::now()));
+  }
+  return true;
 }
 
 void PacePresentation(int64_t pts_us, bool *have_clock,
@@ -234,8 +453,6 @@ bool DecodeOneLoop(const std::string &path, uint64_t session_id, std::string *er
   }
 
   AMediaFormat *track_format = nullptr;
-  AImageReader *reader = nullptr;
-  ANativeWindow *window = nullptr;
   AMediaCodec *codec = nullptr;
 
   auto cleanup = [&]() {
@@ -243,11 +460,6 @@ bool DecodeOneLoop(const std::string &path, uint64_t session_id, std::string *er
       AMediaCodec_stop(codec);
       AMediaCodec_delete(codec);
       codec = nullptr;
-    }
-    if (reader != nullptr) {
-      AImageReader_delete(reader);
-      reader = nullptr;
-      window = nullptr;
     }
     if (track_format != nullptr) {
       AMediaFormat_delete(track_format);
@@ -295,18 +507,13 @@ bool DecodeOneLoop(const std::string &path, uint64_t session_id, std::string *er
     return false;
   }
 
-  if (AImageReader_new(width, height, AIMAGE_FORMAT_YUV_420_888,
-                       kImageReaderMaxImages, &reader) != AMEDIA_OK ||
-      reader == nullptr) {
-    if (error != nullptr) *error = "AImageReader_new failed";
-    cleanup();
-    return false;
-  }
-  if (AImageReader_getWindow(reader, &window) != AMEDIA_OK || window == nullptr) {
-    if (error != nullptr) *error = "AImageReader_getWindow failed";
-    cleanup();
-    return false;
-  }
+  // CPU ByteBuffer decode is more reliable inside cameraserver than
+  // codec->AImageReader surface decode. On this Pixel 6a Android 16 build the
+  // surface path reports output format but never yields AImage buffers, so the
+  // hook has no ready frames. Request flexible YUV and consume output buffers
+  // directly.
+  AMediaFormat_setInt32(track_format, AMEDIAFORMAT_KEY_COLOR_FORMAT,
+                        kColorFormatYuv420Flexible);
 
   codec = AMediaCodec_createDecoderByType(mime.c_str());
   if (codec == nullptr) {
@@ -314,7 +521,7 @@ bool DecodeOneLoop(const std::string &path, uint64_t session_id, std::string *er
     cleanup();
     return false;
   }
-  if (AMediaCodec_configure(codec, track_format, window, nullptr, 0) != AMEDIA_OK ||
+  if (AMediaCodec_configure(codec, track_format, nullptr, nullptr, 0) != AMEDIA_OK ||
       AMediaCodec_start(codec) != AMEDIA_OK) {
     if (error != nullptr) *error = "codec configure/start failed";
     cleanup();
@@ -327,6 +534,14 @@ bool DecodeOneLoop(const std::string &path, uint64_t session_id, std::string *er
   int64_t base_pts_us = 0;
   auto base_wall = std::chrono::steady_clock::now();
   uint64_t produced_frames = 0;
+  CodecOutputLayout output_layout;
+  output_layout.width = width;
+  output_layout.height = height;
+  output_layout.crop_right = width - 1;
+  output_layout.crop_bottom = height - 1;
+  output_layout.stride = width;
+  output_layout.slice_height = height;
+  output_layout.color_format = kColorFormatYuv420Flexible;
 
   while (!ShouldStop(session_id) && !output_done) {
     if (!input_done) {
@@ -362,24 +577,36 @@ bool DecodeOneLoop(const std::string &path, uint64_t session_id, std::string *er
       if (should_render) {
         PacePresentation(info.presentationTimeUs, &have_clock, &base_wall, &base_pts_us,
                          session_id);
-        AMediaCodec_releaseOutputBuffer(codec, static_cast<size_t>(output_index), true);
-
-        AImage *image = nullptr;
-        if (AcquireLatestImage(reader, session_id, &image)) {
+        size_t output_size = 0;
+        uint8_t *output_buffer =
+            AMediaCodec_getOutputBuffer(codec, static_cast<size_t>(output_index),
+                                        &output_size);
+        if (output_buffer != nullptr && output_size > 0 &&
+            info.offset >= 0 && info.size > 0 &&
+            static_cast<size_t>(info.offset) < output_size) {
+          const size_t available_size =
+              std::min(output_size - static_cast<size_t>(info.offset),
+                       static_cast<size_t>(info.size));
           std::vector<uint8_t> i420;
           int32_t frame_width = 0;
           int32_t frame_height = 0;
-          if (ConvertImageToI420(image, &i420, &frame_width, &frame_height)) {
+          if (ConvertCodecOutputToI420(output_buffer + info.offset, available_size,
+                                       output_layout, &i420, &frame_width,
+                                       &frame_height)) {
             PublishDecodedI420Frame(frame_width, frame_height, std::move(i420));
             produced_frames += 1;
             if (produced_frames <= 5 || (produced_frames % 120) == 0) {
-              LOGI("NativePlayback: decoded frame #%llu %dx%d from %s",
+              LOGI("NativePlayback: decoded CPU frame #%llu %dx%d pts=%lld from %s",
                    static_cast<unsigned long long>(produced_frames), frame_width,
-                   frame_height, path.c_str());
+                   frame_height, static_cast<long long>(info.presentationTimeUs),
+                   path.c_str());
             }
+          } else if (produced_frames < 5) {
+            LOGW("NativePlayback: CPU output convert failed size=%zu info.offset=%d info.size=%d fmt=%#x",
+                 output_size, info.offset, info.size, output_layout.color_format);
           }
-          AImage_delete(image);
         }
+        AMediaCodec_releaseOutputBuffer(codec, static_cast<size_t>(output_index), false);
       } else {
         AMediaCodec_releaseOutputBuffer(codec, static_cast<size_t>(output_index), false);
       }
@@ -390,6 +617,7 @@ bool DecodeOneLoop(const std::string &path, uint64_t session_id, std::string *er
         const char *desc = AMediaFormat_toString(output_format);
         LOGI("NativePlayback: output format changed %s",
              desc != nullptr ? desc : "(null)");
+        UpdateCodecOutputLayout(output_format, &output_layout);
         AMediaFormat_delete(output_format);
       }
     }

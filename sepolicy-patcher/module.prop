@@ -1,6 +1,6 @@
 id=sepolicy-patcher
 name=awesomeCAM minimal sepolicy patcher
-version=2.0.0
-versionCode=5
+version=2.2.0
+versionCode=7
 author=namnh
-description=Minimal SELinux policy for awesomeCAM native injector, cameraserver payload loading, Video2CameraService, and native-player media.extractor access.
+description=Minimal SELinux policy for awesomeCAM native injector, cameraserver restart/payload loading, Video2CameraService, and native-player media.extractor access.

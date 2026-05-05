@@ -6,12 +6,14 @@ import android.os.Bundle
 import android.widget.Button
 import android.widget.TextView
 import androidx.appcompat.app.AppCompatActivity
+import androidx.core.widget.NestedScrollView
 import java.io.File
 import java.util.zip.ZipFile
 import kotlin.concurrent.thread
 
 class InjectorActivity : AppCompatActivity() {
     private lateinit var summaryText: TextView
+    private lateinit var summaryScroll: NestedScrollView
     private lateinit var buildTitleText: TextView
     private lateinit var feedController: Mp4FeedController
     private lateinit var feedButton: Button
@@ -20,6 +22,9 @@ class InjectorActivity : AppCompatActivity() {
         override fun onTelemetryChanged(snapshot: TelemetryStore.Snapshot) {
             runOnUiThread {
                 summaryText.text = buildSummary(snapshot.status)
+                summaryScroll.post {
+                    summaryScroll.fullScroll(NestedScrollView.FOCUS_DOWN)
+                }
                 feedButton.text = getString(
                     if (feedController.isRunning) R.string.feed_button_stop else R.string.feed_button_start,
                 )
@@ -32,6 +37,7 @@ class InjectorActivity : AppCompatActivity() {
         setContentView(R.layout.activity_injector)
 
         summaryText = findViewById(R.id.summaryText)
+        summaryScroll = findViewById(R.id.summaryScroll)
         buildTitleText = findViewById(R.id.buildTitleText)
         feedController = Mp4FeedController(::appendStatus)
         feedButton = findViewById(R.id.feedButton)
@@ -51,7 +57,10 @@ class InjectorActivity : AppCompatActivity() {
             runAsync {
                 appendStatus("Preparing runtime files")
                 val localHelper = extractAsset(HELPER_ASSET)
-                val localHook = extractAsset(HOOK_ASSET)
+                // libhook.so must come from APK native lib/, not assets/.
+                // AGP packages assets before CMake refreshes app/src/main/assets/libhook.so,
+                // so assets/libhook.so can be one build stale and crash cameraserver.
+                val localHook = extractBundledNativeLib(HOOK_ASSET)
                 val localShadowHook = extractBundledNativeLib(SHADOWHOOK_LIB_NAME)
 
                 appendStatus(
@@ -175,17 +184,29 @@ class InjectorActivity : AppCompatActivity() {
         val helperDst = "$RUNTIME_DIR/$HELPER_ASSET"
         val shadowHookDst = "$RUNTIME_DIR/$SHADOWHOOK_LIB_NAME"
         val hookDst = "$RUNTIME_DIR/$HOOK_ASSET"
+        val offsetConfigDst = "$RUNTIME_DIR/$OFFSET_CONFIG_NAME"
 
         return buildList {
             add("mkdir -p ${shellQuote(RUNTIME_DIR)}")
+            add("touch ${shellQuote(offsetConfigDst)}")
+            add("chmod 0666 ${shellQuote(offsetConfigDst)}")
+            add("chcon u:object_r:awesomecam_config_file:s0 ${shellQuote(offsetConfigDst)} || true")
             add("cp ${shellQuote(helper.absolutePath)} ${shellQuote(helperDst)}")
             add("cp ${shellQuote(shadowHook.absolutePath)} ${shellQuote(shadowHookDst)}")
             add("cp ${shellQuote(hook.absolutePath)} ${shellQuote(hookDst)}")
             add("chmod 0755 ${shellQuote(helperDst)}")
             add("chmod 0644 ${shellQuote(shadowHookDst)} ${shellQuote(hookDst)}")
             add("chcon u:object_r:system_lib_file:s0 ${shellQuote(shadowHookDst)} ${shellQuote(hookDst)}")
-            add("sh -c \"$helperDst cameraserver $shadowHookDst\"")
-            add("sh -c \"$helperDst cameraserver $hookDst main_hook\"")
+            // Do not wrap with `sh -c`.
+            //
+            // KernelSU keeps the top-level `su` command in u:r:su:s0, but a nested
+            // `sh -c ...` can run in u:r:shell:s0. On enforcing builds, shell is
+            // not allowed to execute /data/camera/injector_helper
+            // (system_data_file), so injection silently fails and cameraserver has
+            // no libhook.so mapped. Execute the helper directly from the su command
+            // stream instead.
+            add("${shellQuote(helperDst)} cameraserver ${shellQuote(shadowHookDst)}")
+            add("${shellQuote(helperDst)} cameraserver ${shellQuote(hookDst)} main_hook")
         }
     }
 
@@ -223,5 +244,6 @@ class InjectorActivity : AppCompatActivity() {
         private const val HELPER_ASSET = "injector_helper"
         private const val HOOK_ASSET = "libhook.so"
         private const val SHADOWHOOK_LIB_NAME = "libshadowhook.so"
+        private const val OFFSET_CONFIG_NAME = "awesomecam_offsets.conf"
     }
 }

@@ -28,11 +28,33 @@ using I420ScaleFn = int (*)(const uint8_t *src_y, int src_stride_y,
                             uint8_t *dst_v, int dst_stride_v,
                             int dst_width, int dst_height,
                             int filtering);
+using I420CopyFn = int (*)(const uint8_t *src_y, int src_stride_y,
+                           const uint8_t *src_u, int src_stride_u,
+                           const uint8_t *src_v, int src_stride_v,
+                           uint8_t *dst_y, int dst_stride_y,
+                           uint8_t *dst_u, int dst_stride_u,
+                           uint8_t *dst_v, int dst_stride_v,
+                           int width, int height);
+using I420ToNV12Fn = int (*)(const uint8_t *src_y, int src_stride_y,
+                             const uint8_t *src_u, int src_stride_u,
+                             const uint8_t *src_v, int src_stride_v,
+                             uint8_t *dst_y, int dst_stride_y,
+                             uint8_t *dst_uv, int dst_stride_uv,
+                             int width, int height);
+using I420ToNV21Fn = int (*)(const uint8_t *src_y, int src_stride_y,
+                             const uint8_t *src_u, int src_stride_u,
+                             const uint8_t *src_v, int src_stride_v,
+                             uint8_t *dst_y, int dst_stride_y,
+                             uint8_t *dst_vu, int dst_stride_vu,
+                             int width, int height);
 
 struct LibYuvRuntime {
   void *handle = nullptr;
   Android420ToI420Fn android420_to_i420 = nullptr;
   I420ScaleFn i420_scale = nullptr;
+  I420CopyFn i420_copy = nullptr;
+  I420ToNV12Fn i420_to_nv12 = nullptr;
+  I420ToNV21Fn i420_to_nv21 = nullptr;
   bool ok = false;
 };
 
@@ -54,12 +76,20 @@ void InitLibYuvRuntime() {
     auto android420_to_i420 = reinterpret_cast<Android420ToI420Fn>(
         dlsym(handle, "Android420ToI420"));
     auto i420_scale = reinterpret_cast<I420ScaleFn>(dlsym(handle, "I420Scale"));
+    auto i420_copy = reinterpret_cast<I420CopyFn>(dlsym(handle, "I420Copy"));
+    auto i420_to_nv12 = reinterpret_cast<I420ToNV12Fn>(dlsym(handle, "I420ToNV12"));
+    auto i420_to_nv21 = reinterpret_cast<I420ToNV21Fn>(dlsym(handle, "I420ToNV21"));
     if (android420_to_i420 != nullptr && i420_scale != nullptr) {
       g_runtime.handle = handle;
       g_runtime.android420_to_i420 = android420_to_i420;
       g_runtime.i420_scale = i420_scale;
+      g_runtime.i420_copy = i420_copy;
+      g_runtime.i420_to_nv12 = i420_to_nv12;
+      g_runtime.i420_to_nv21 = i420_to_nv21;
       g_runtime.ok = true;
-      LOGI("libyuv runtime loaded from %s", path);
+      LOGI("libyuv runtime loaded from %s copy=%d nv12=%d nv21=%d", path,
+           i420_copy != nullptr ? 1 : 0, i420_to_nv12 != nullptr ? 1 : 0,
+           i420_to_nv21 != nullptr ? 1 : 0);
       return;
     }
 
@@ -109,6 +139,46 @@ bool LibYuvI420Scale(const uint8_t *src_y, int src_stride_y,
                        src_stride_v, src_width, src_height, dst_y,
                        dst_stride_y, dst_u, dst_stride_u, dst_v,
                        dst_stride_v, dst_width, dst_height, filtering) == 0;
+}
+
+bool LibYuvI420Copy(const uint8_t *src_y, int src_stride_y,
+                    const uint8_t *src_u, int src_stride_u,
+                    const uint8_t *src_v, int src_stride_v,
+                    uint8_t *dst_y, int dst_stride_y,
+                    uint8_t *dst_u, int dst_stride_u,
+                    uint8_t *dst_v, int dst_stride_v,
+                    int width, int height) {
+  const auto &rt = Runtime();
+  if (!rt.ok || rt.i420_copy == nullptr) return false;
+  return rt.i420_copy(src_y, src_stride_y, src_u, src_stride_u, src_v,
+                      src_stride_v, dst_y, dst_stride_y, dst_u, dst_stride_u,
+                      dst_v, dst_stride_v, width, height) == 0;
+}
+
+bool LibYuvI420ToNV12(const uint8_t *src_y, int src_stride_y,
+                      const uint8_t *src_u, int src_stride_u,
+                      const uint8_t *src_v, int src_stride_v,
+                      uint8_t *dst_y, int dst_stride_y,
+                      uint8_t *dst_uv, int dst_stride_uv,
+                      int width, int height) {
+  const auto &rt = Runtime();
+  if (!rt.ok || rt.i420_to_nv12 == nullptr) return false;
+  return rt.i420_to_nv12(src_y, src_stride_y, src_u, src_stride_u, src_v,
+                         src_stride_v, dst_y, dst_stride_y, dst_uv,
+                         dst_stride_uv, width, height) == 0;
+}
+
+bool LibYuvI420ToNV21(const uint8_t *src_y, int src_stride_y,
+                      const uint8_t *src_u, int src_stride_u,
+                      const uint8_t *src_v, int src_stride_v,
+                      uint8_t *dst_y, int dst_stride_y,
+                      uint8_t *dst_vu, int dst_stride_vu,
+                      int width, int height) {
+  const auto &rt = Runtime();
+  if (!rt.ok || rt.i420_to_nv21 == nullptr) return false;
+  return rt.i420_to_nv21(src_y, src_stride_y, src_u, src_stride_u, src_v,
+                         src_stride_v, dst_y, dst_stride_y, dst_vu,
+                         dst_stride_vu, width, height) == 0;
 }
 
 }  // namespace awesomecam

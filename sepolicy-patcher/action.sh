@@ -9,6 +9,10 @@ if [ -f "$CAMDIR/input.mp4" ]; then
   chmod 0644 "$CAMDIR/input.mp4" 2>/dev/null || true
 fi
 
+touch "$CAMDIR/awesomecam_offsets.conf" 2>/dev/null || true
+chcon u:object_r:awesomecam_config_file:s0 "$CAMDIR/awesomecam_offsets.conf" 2>/dev/null || true
+chmod 0666 "$CAMDIR/awesomecam_offsets.conf" 2>/dev/null || true
+
 for so in "$CAMDIR"/*.so; do
   [ -e "$so" ] || continue
   chcon u:object_r:system_lib_file:s0 "$so" 2>/dev/null || true
