@@ -122,6 +122,8 @@ constexpr uint32_t kGraphicBufferCpuLockUsage = 0x33;
 constexpr uint64_t kGrallocUsageCpuReadWriteOften = 0x33;
 constexpr uintptr_t kAnwHandleOffset = 0x60;
 constexpr uint64_t kNsPerSecond = 1000000000ULL;
+constexpr int kDefaultFenceWaitTimeoutMs = 1000;
+constexpr int kSurfaceFenceWaitTimeoutMs = 0;
 constexpr uint64_t kWriteModeRefreshIntervalNs = kNsPerSecond;
 constexpr const char *kWriteAllFlagPath = "/data/camera/awesomecam_write_all";
 constexpr const char *kWriteCamera3FlagPath = "/data/camera/awesomecam_write_camera3";
@@ -574,9 +576,10 @@ bool prefer_raw_nv21_output() {
   return access("/data/camera/awesomecam_use_nv21", F_OK) == 0;
 }
 
-bool wait_fence_if_valid(int fence_fd, const char *where) {
+bool wait_fence_if_valid(int fence_fd, const char *where, int timeout_ms) {
   if (fence_fd < 0) return true;
 
+  const int poll_timeout_ms = timeout_ms >= 0 ? timeout_ms : kDefaultFenceWaitTimeoutMs;
   const uint64_t start_ns = monotonic_time_ns();
   pollfd pfd{};
   pfd.fd = fence_fd;
@@ -584,7 +587,7 @@ bool wait_fence_if_valid(int fence_fd, const char *where) {
 
   int rc = -1;
   do {
-    rc = poll(&pfd, 1, 1000);
+    rc = poll(&pfd, 1, poll_timeout_ms);
   } while (rc < 0 && errno == EINTR);
 
   const uint64_t done_ns = monotonic_time_ns();
@@ -595,9 +598,9 @@ bool wait_fence_if_valid(int fence_fd, const char *where) {
     const uint64_t timeout_count =
         g_fence_wait_timeout_count.fetch_add(1, std::memory_order_relaxed) + 1;
     if (timeout_count <= 20 || (timeout_count % 120) == 0) {
-      LOGW("%s fence wait timeout #%llu fd=%d waited=%.3fms",
+      LOGW("%s fence wait timeout #%llu fd=%d timeout=%dms waited=%.3fms",
            where != nullptr ? where : "replace",
-           static_cast<unsigned long long>(timeout_count), fence_fd,
+           static_cast<unsigned long long>(timeout_count), fence_fd, poll_timeout_ms,
            ns_to_ms(done_ns - start_ns));
     }
     return false;
@@ -1025,7 +1028,8 @@ int hook_queue_buffer_to_consumer(void *thiz, void *consumer_sp, void *anw_buffe
     }
     if (write_mode_allows_camera3(current_write_mode())) {
       (void)wait_fence_if_valid(anw_release_fence,
-                                "queueBufferToConsumer release");
+                                "queueBufferToConsumer release",
+                                kDefaultFenceWaitTimeoutMs);
       (void)try_replace_anw_buffer_direct(anw_buffer, width, height, format,
                                           "queueBufferToConsumer");
     }
@@ -1073,9 +1077,13 @@ int hook_surface_hook_queue_buffer(void *window, void *anw_buffer, int fence_fd)
            prefix->stride, format, prefix->usage);
     }
     if (write_mode_allows_surface(current_write_mode())) {
-      (void)wait_fence_if_valid(fence_fd, "Surface::hook_queueBuffer fence");
-      (void)try_replace_anw_buffer_direct(anw_buffer, width, height, format,
-                                          "Surface::hook_queueBuffer");
+      const bool fence_ready =
+          wait_fence_if_valid(fence_fd, "Surface::hook_queueBuffer fence",
+                              kSurfaceFenceWaitTimeoutMs);
+      if (fence_ready) {
+        (void)try_replace_anw_buffer_direct(anw_buffer, width, height, format,
+                                            "Surface::hook_queueBuffer");
+      }
     }
   } else if (count <= 20) {
     LOGI("Surface::hook_queueBuffer hit #%llu anw=null", static_cast<unsigned long long>(count));
@@ -1197,7 +1205,8 @@ int hook_return_buffer_checked_locked(
     // CPU-write before that fence signals, HAL/GPU can still overwrite our
     // replacement and the app sees the original frame.  Wait first, then write.
     (void)wait_fence_if_valid(buffer.acquire_fence,
-                              "returnBufferCheckedLocked acquire");
+                              "returnBufferCheckedLocked acquire",
+                              kDefaultFenceWaitTimeoutMs);
     (void)try_replace_camera3_frame(buffer, surface_id_for_log,
                                     found_match ? &matched : nullptr);
   }
