@@ -822,6 +822,187 @@ bool write_i420_to_contiguous_nv(const uint8_t *scaled_i420, size_t scaled_i420_
   return true;
 }
 
+awesomecam::ReadyFrameLayout ready_layout_for_ycbcr(const android_ycbcr &layout) {
+  if (layout.chroma_step == 1) return awesomecam::kReadyFrameLayoutI420;
+  if (layout.chroma_step == 2 && layout.cb != nullptr && layout.cr != nullptr) {
+    return static_cast<uint8_t *>(layout.cb) < static_cast<uint8_t *>(layout.cr)
+               ? awesomecam::kReadyFrameLayoutNV12
+               : awesomecam::kReadyFrameLayoutNV21;
+  }
+  return awesomecam::kReadyFrameLayoutI420;
+}
+
+size_t ready_layout_chroma_row_bytes(int width, awesomecam::ReadyFrameLayout layout) {
+  if (layout == awesomecam::kReadyFrameLayoutI420) return chroma_width_for(width);
+  return chroma_width_for(width) * 2;
+}
+
+bool write_ready_nv_to_ycbcr(const awesomecam::ReadyI420Frame &frame,
+                             const android_ycbcr &layout) {
+  if (frame.layout != awesomecam::kReadyFrameLayoutNV12 &&
+      frame.layout != awesomecam::kReadyFrameLayoutNV21) {
+    return false;
+  }
+  if (layout.y == nullptr || layout.cb == nullptr || layout.cr == nullptr ||
+      layout.chroma_step != 2 || frame.width <= 0 || frame.height <= 0) {
+    return false;
+  }
+  const auto wanted_layout = static_cast<awesomecam::ReadyFrameLayout>(frame.layout);
+  if (ready_layout_for_ycbcr(layout) != wanted_layout) return false;
+
+  const int width = frame.width;
+  const int height = frame.height;
+  const int y_stride = frame.y_stride > 0 ? frame.y_stride : width;
+  const int uv_stride = frame.c_stride > 0
+                            ? frame.c_stride
+                            : static_cast<int>(ready_layout_chroma_row_bytes(width, wanted_layout));
+  const size_t y_size = static_cast<size_t>(y_stride) * height;
+  const size_t uv_row_bytes = chroma_width_for(width) * 2;
+  const size_t uv_rows = chroma_height_for(height);
+  if (frame.bytes.size() < y_size + static_cast<size_t>(uv_stride) * uv_rows) {
+    return false;
+  }
+
+  auto *dst_y = static_cast<uint8_t *>(layout.y);
+  auto *dst_uv = wanted_layout == awesomecam::kReadyFrameLayoutNV12
+                     ? static_cast<uint8_t *>(layout.cb)
+                     : static_cast<uint8_t *>(layout.cr);
+  const uint8_t *src_y = frame.bytes.data();
+  const uint8_t *src_uv = src_y + y_size;
+  copy_plane_rows(dst_y, layout.ystride, src_y, y_stride, width, height);
+  copy_plane_rows(dst_uv, layout.cstride, src_uv, uv_stride,
+                  static_cast<int>(uv_row_bytes), static_cast<int>(uv_rows));
+  return true;
+}
+
+bool write_ready_nv_to_contiguous_nv(const awesomecam::ReadyI420Frame &frame,
+                                     void *vaddr, int stride_bytes,
+                                     bool nv21) {
+  const auto wanted_layout =
+      nv21 ? awesomecam::kReadyFrameLayoutNV21 : awesomecam::kReadyFrameLayoutNV12;
+  if (frame.layout != wanted_layout || vaddr == nullptr || frame.width <= 0 ||
+      frame.height <= 0) {
+    return false;
+  }
+  const int width = frame.width;
+  const int height = frame.height;
+  if (stride_bytes <= 0) stride_bytes = width;
+  const int y_stride = frame.y_stride > 0 ? frame.y_stride : width;
+  const int uv_stride = frame.c_stride > 0
+                            ? frame.c_stride
+                            : static_cast<int>(ready_layout_chroma_row_bytes(width, wanted_layout));
+  const size_t y_size = static_cast<size_t>(y_stride) * height;
+  const size_t uv_row_bytes = chroma_width_for(width) * 2;
+  const size_t uv_rows = chroma_height_for(height);
+  if (stride_bytes < width || static_cast<size_t>(stride_bytes) < uv_row_bytes ||
+      frame.bytes.size() < y_size + static_cast<size_t>(uv_stride) * uv_rows) {
+    return false;
+  }
+  auto *dst_y = static_cast<uint8_t *>(vaddr);
+  auto *dst_uv = dst_y + static_cast<size_t>(stride_bytes) * height;
+  const uint8_t *src_y = frame.bytes.data();
+  const uint8_t *src_uv = src_y + y_size;
+  copy_plane_rows(dst_y, static_cast<size_t>(stride_bytes), src_y, y_stride,
+                  width, height);
+  copy_plane_rows(dst_uv, static_cast<size_t>(stride_bytes), src_uv, uv_stride,
+                  static_cast<int>(uv_row_bytes), static_cast<int>(uv_rows));
+  return true;
+}
+
+bool write_ready_nv_to_two_planes(const awesomecam::ReadyI420Frame &frame,
+                                  void *dst_y_ptr, int dst_y_stride,
+                                  void *dst_uv_ptr, int dst_uv_stride,
+                                  bool nv21) {
+  const auto wanted_layout =
+      nv21 ? awesomecam::kReadyFrameLayoutNV21 : awesomecam::kReadyFrameLayoutNV12;
+  if (frame.layout != wanted_layout || dst_y_ptr == nullptr || dst_uv_ptr == nullptr ||
+      frame.width <= 0 || frame.height <= 0) {
+    return false;
+  }
+  const int width = frame.width;
+  const int height = frame.height;
+  const int y_stride = frame.y_stride > 0 ? frame.y_stride : width;
+  const int uv_stride = frame.c_stride > 0
+                            ? frame.c_stride
+                            : static_cast<int>(ready_layout_chroma_row_bytes(width, wanted_layout));
+  const size_t y_size = static_cast<size_t>(y_stride) * height;
+  const size_t uv_row_bytes = chroma_width_for(width) * 2;
+  const size_t uv_rows = chroma_height_for(height);
+  if (dst_y_stride < width || static_cast<size_t>(dst_uv_stride) < uv_row_bytes ||
+      frame.bytes.size() < y_size + static_cast<size_t>(uv_stride) * uv_rows) {
+    return false;
+  }
+  const uint8_t *src_y = frame.bytes.data();
+  const uint8_t *src_uv = src_y + y_size;
+  copy_plane_rows(static_cast<uint8_t *>(dst_y_ptr), static_cast<size_t>(dst_y_stride),
+                  src_y, y_stride, width, height);
+  copy_plane_rows(static_cast<uint8_t *>(dst_uv_ptr), static_cast<size_t>(dst_uv_stride),
+                  src_uv, uv_stride, static_cast<int>(uv_row_bytes),
+                  static_cast<int>(uv_rows));
+  return true;
+}
+
+bool try_write_prebuilt_ycbcr_or_i420(const uint8_t *scaled_i420,
+                                      size_t scaled_i420_size, int width, int height,
+                                      const android_ycbcr &layout) {
+  const auto wanted_layout = ready_layout_for_ycbcr(layout);
+  awesomecam::RegisterReadyFrameOutputLayout(width, height, wanted_layout);
+  if (wanted_layout != awesomecam::kReadyFrameLayoutI420) {
+    auto prebuilt = awesomecam::GetReadyFrameForLayout(width, height, wanted_layout);
+    if (prebuilt && write_ready_nv_to_ycbcr(*prebuilt, layout)) return true;
+  }
+  return write_i420_to_ycbcr(scaled_i420, scaled_i420_size, width, height, layout);
+}
+
+bool try_write_prebuilt_raw_or_i420(const uint8_t *scaled_i420,
+                                    size_t scaled_i420_size, int width, int height,
+                                    void *vaddr, int stride_bytes, bool nv21) {
+  const auto wanted_layout =
+      nv21 ? awesomecam::kReadyFrameLayoutNV21 : awesomecam::kReadyFrameLayoutNV12;
+  awesomecam::RegisterReadyFrameOutputLayout(width, height, wanted_layout);
+  auto prebuilt = awesomecam::GetReadyFrameForLayout(width, height, wanted_layout);
+  if (prebuilt && write_ready_nv_to_contiguous_nv(*prebuilt, vaddr, stride_bytes, nv21)) {
+    return true;
+  }
+  return write_i420_to_contiguous_nv(scaled_i420, scaled_i420_size, width, height,
+                                     vaddr, stride_bytes, nv21);
+}
+
+bool try_write_prebuilt_two_plane_or_i420(const uint8_t *scaled_i420,
+                                          size_t scaled_i420_size, int width,
+                                          int height, void *dst_y, int dst_y_stride,
+                                          void *dst_uv, int dst_uv_stride,
+                                          bool nv21) {
+  const auto wanted_layout =
+      nv21 ? awesomecam::kReadyFrameLayoutNV21 : awesomecam::kReadyFrameLayoutNV12;
+  awesomecam::RegisterReadyFrameOutputLayout(width, height, wanted_layout);
+  auto prebuilt = awesomecam::GetReadyFrameForLayout(width, height, wanted_layout);
+  if (prebuilt && write_ready_nv_to_two_planes(*prebuilt, dst_y, dst_y_stride,
+                                               dst_uv, dst_uv_stride, nv21)) {
+    return true;
+  }
+  if (scaled_i420 == nullptr || scaled_i420_size < awesomecam::I420FrameSize(width, height)) {
+    return false;
+  }
+  const size_t y_size = static_cast<size_t>(width) * height;
+  const int chroma_width = static_cast<int>(chroma_width_for(width));
+  const uint8_t *src_y = scaled_i420;
+  const uint8_t *src_u = src_y + y_size;
+  const uint8_t *src_v = src_u + static_cast<size_t>(chroma_width) *
+                                   static_cast<size_t>(chroma_height_for(height));
+  return nv21
+             ? awesomecam::LibYuvI420ToNV21(src_y, width, src_u, chroma_width,
+                                            src_v, chroma_width,
+                                            static_cast<uint8_t *>(dst_y), dst_y_stride,
+                                            static_cast<uint8_t *>(dst_uv), dst_uv_stride,
+                                            width, height)
+             : awesomecam::LibYuvI420ToNV12(src_y, width, src_u, chroma_width,
+                                            src_v, chroma_width,
+                                            static_cast<uint8_t *>(dst_y), dst_y_stride,
+                                            static_cast<uint8_t *>(dst_uv), dst_uv_stride,
+                                            width, height);
+}
+
 bool try_write_i420_to_ahardwarebuffer_planes(void *graphic_buffer,
                                               const uint8_t *scaled_i420,
                                               size_t scaled_i420_size,
@@ -865,32 +1046,15 @@ bool try_write_i420_to_ahardwarebuffer_planes(void *graphic_buffer,
     layout.ystride = planes.planes[0].rowStride;
     layout.cstride = planes.planes[1].rowStride;
     layout.chroma_step = planes.planes[1].pixelStride;
-    replaced = write_i420_to_ycbcr(scaled_i420, scaled_i420_size, width, height, layout);
+    replaced = try_write_prebuilt_ycbcr_or_i420(scaled_i420, scaled_i420_size,
+                                                width, height, layout);
   } else if (planes.planeCount >= 2 && planes.planes[0].data != nullptr &&
              planes.planes[1].data != nullptr) {
-    const size_t y_size = static_cast<size_t>(width) * height;
-    const int chroma_width = static_cast<int>(chroma_width_for(width));
-    const size_t chroma_size =
-        static_cast<size_t>(chroma_width) * static_cast<size_t>(chroma_height_for(height));
-    if (scaled_i420 != nullptr && scaled_i420_size >= y_size + 2 * chroma_size) {
-      const uint8_t *src_y = scaled_i420;
-      const uint8_t *src_u = src_y + y_size;
-      const uint8_t *src_v = src_u + chroma_size;
-      const bool nv21 = prefer_raw_nv21_output();
-      replaced = nv21
-          ? awesomecam::LibYuvI420ToNV21(
-                src_y, width, src_u, chroma_width, src_v, chroma_width,
-                static_cast<uint8_t *>(planes.planes[0].data),
-                static_cast<int>(planes.planes[0].rowStride),
-                static_cast<uint8_t *>(planes.planes[1].data),
-                static_cast<int>(planes.planes[1].rowStride), width, height)
-          : awesomecam::LibYuvI420ToNV12(
-                src_y, width, src_u, chroma_width, src_v, chroma_width,
-                static_cast<uint8_t *>(planes.planes[0].data),
-                static_cast<int>(planes.planes[0].rowStride),
-                static_cast<uint8_t *>(planes.planes[1].data),
-                static_cast<int>(planes.planes[1].rowStride), width, height);
-    }
+    const bool nv21 = prefer_raw_nv21_output();
+    replaced = try_write_prebuilt_two_plane_or_i420(
+        scaled_i420, scaled_i420_size, width, height, planes.planes[0].data,
+        static_cast<int>(planes.planes[0].rowStride), planes.planes[1].data,
+        static_cast<int>(planes.planes[1].rowStride), nv21);
   }
 
   int32_t unlock_fence = -1;
@@ -936,7 +1100,8 @@ bool try_write_i420_to_ycbcr_lock(void *graphic_buffer, const uint8_t *frame_byt
     return false;
   }
 
-  const bool replaced = write_i420_to_ycbcr(frame_bytes, frame_size, width, height, layout);
+  const bool replaced = try_write_prebuilt_ycbcr_or_i420(frame_bytes, frame_size,
+                                                         width, height, layout);
   const int unlock_rc = g_graphic_buffer_api.unlock(graphic_buffer);
   if (unlock_rc != 0) {
     LOGW("%s GraphicBuffer::unlock failed rc=%d",
@@ -974,8 +1139,9 @@ bool try_write_i420_to_raw_lock(void *graphic_buffer, const uint8_t *frame_bytes
   }
 
   const bool nv21 = prefer_raw_nv21_output();
-  const bool replaced = write_i420_to_contiguous_nv(frame_bytes, frame_size, width, height,
-                                                   raw_vaddr, raw_stride, nv21);
+  const bool replaced = try_write_prebuilt_raw_or_i420(frame_bytes, frame_size, width,
+                                                       height, raw_vaddr,
+                                                       raw_stride, nv21);
   const int unlock_rc = g_graphic_buffer_api.unlock(graphic_buffer);
   if (unlock_rc != 0) {
     LOGW("%s GraphicBuffer::raw unlock failed rc=%d",
