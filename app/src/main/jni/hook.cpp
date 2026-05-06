@@ -122,6 +122,15 @@ constexpr uint32_t kGraphicBufferCpuLockUsage = 0x33;
 constexpr uint64_t kGrallocUsageCpuReadWriteOften = 0x33;
 constexpr uintptr_t kAnwHandleOffset = 0x60;
 constexpr uint64_t kNsPerSecond = 1000000000ULL;
+constexpr uint64_t kWriteModeRefreshIntervalNs = kNsPerSecond;
+constexpr const char *kWriteAllFlagPath = "/data/camera/awesomecam_write_all";
+constexpr const char *kWriteCamera3FlagPath = "/data/camera/awesomecam_write_camera3";
+
+enum class WriteMode : int {
+  kSurfaceOnly = 0,
+  kAll = 1,
+  kCamera3Only = 2,
+};
 
 struct StreamRecord {
   int stream_id;
@@ -207,6 +216,8 @@ std::atomic<uint64_t> g_fence_wait_count{0};
 std::atomic<uint64_t> g_fence_wait_timeout_count{0};
 std::atomic<uint64_t> g_ahb_lock_fail_count{0};
 std::atomic<uint64_t> g_ahb_lock_success_count{0};
+std::atomic<int> g_write_mode{static_cast<int>(WriteMode::kSurfaceOnly)};
+std::atomic<uint64_t> g_write_mode_last_refresh_ns{0};
 
 void *g_camera3device_create_stream_stub = nullptr;
 void *g_return_buffer_checked_locked_stub = nullptr;
@@ -228,6 +239,68 @@ uint64_t monotonic_time_ns() {
 
 double ns_to_ms(uint64_t ns) {
   return static_cast<double>(ns) / 1000000.0;
+}
+
+const char *write_mode_name(WriteMode mode) {
+  switch (mode) {
+    case WriteMode::kSurfaceOnly:
+      return "surfaceOnly";
+    case WriteMode::kAll:
+      return "writeAll";
+    case WriteMode::kCamera3Only:
+      return "camera3Only";
+  }
+  return "unknown";
+}
+
+WriteMode write_mode_from_int(int value) {
+  switch (value) {
+    case static_cast<int>(WriteMode::kAll):
+      return WriteMode::kAll;
+    case static_cast<int>(WriteMode::kCamera3Only):
+      return WriteMode::kCamera3Only;
+    case static_cast<int>(WriteMode::kSurfaceOnly):
+    default:
+      return WriteMode::kSurfaceOnly;
+  }
+}
+
+WriteMode detect_write_mode_from_flags() {
+  if (access(kWriteAllFlagPath, F_OK) == 0) {
+    return WriteMode::kAll;
+  }
+  if (access(kWriteCamera3FlagPath, F_OK) == 0) {
+    return WriteMode::kCamera3Only;
+  }
+  return WriteMode::kSurfaceOnly;
+}
+
+WriteMode current_write_mode() {
+  const uint64_t now_ns = monotonic_time_ns();
+  uint64_t last_ns = g_write_mode_last_refresh_ns.load(std::memory_order_acquire);
+  if (last_ns == 0 || now_ns - last_ns >= kWriteModeRefreshIntervalNs) {
+    if (g_write_mode_last_refresh_ns.compare_exchange_strong(
+            last_ns, now_ns, std::memory_order_acq_rel, std::memory_order_acquire)) {
+      const WriteMode detected = detect_write_mode_from_flags();
+      const WriteMode previous = write_mode_from_int(
+          g_write_mode.exchange(static_cast<int>(detected), std::memory_order_acq_rel));
+      if (previous != detected) {
+        LOGI("write mode changed: %s -> %s (all=%s camera3=%s)",
+             write_mode_name(previous), write_mode_name(detected),
+             kWriteAllFlagPath, kWriteCamera3FlagPath);
+      }
+      return detected;
+    }
+  }
+  return write_mode_from_int(g_write_mode.load(std::memory_order_acquire));
+}
+
+bool write_mode_allows_surface(WriteMode mode) {
+  return mode == WriteMode::kSurfaceOnly || mode == WriteMode::kAll;
+}
+
+bool write_mode_allows_camera3(WriteMode mode) {
+  return mode == WriteMode::kAll || mode == WriteMode::kCamera3Only;
 }
 
 bool resolve_graphic_buffer_api() {
@@ -946,10 +1019,16 @@ int hook_queue_buffer_to_consumer(void *thiz, void *consumer_sp, void *anw_buffe
            static_cast<unsigned long long>(count), anw_buffer, width, height,
            prefix->stride, format, prefix->usage);
     }
-    (void)wait_fence_if_valid(anw_release_fence,
-                              "queueBufferToConsumer release");
-    (void)try_replace_anw_buffer_direct(anw_buffer, width, height, format,
-                                        "queueBufferToConsumer");
+    if (width > 0 && height > 0) {
+      register_video_target_if_supported(static_cast<uint32_t>(width),
+                                         static_cast<uint32_t>(height), format);
+    }
+    if (write_mode_allows_camera3(current_write_mode())) {
+      (void)wait_fence_if_valid(anw_release_fence,
+                                "queueBufferToConsumer release");
+      (void)try_replace_anw_buffer_direct(anw_buffer, width, height, format,
+                                          "queueBufferToConsumer");
+    }
   } else if (count <= 20) {
     LOGI("queueBufferToConsumer hit #%llu anw=null", static_cast<unsigned long long>(count));
   }
@@ -993,9 +1072,11 @@ int hook_surface_hook_queue_buffer(void *window, void *anw_buffer, int fence_fd)
            static_cast<unsigned long long>(count), window, anw_buffer, width, height,
            prefix->stride, format, prefix->usage);
     }
-    (void)wait_fence_if_valid(fence_fd, "Surface::hook_queueBuffer fence");
-    (void)try_replace_anw_buffer_direct(anw_buffer, width, height, format,
-                                        "Surface::hook_queueBuffer");
+    if (write_mode_allows_surface(current_write_mode())) {
+      (void)wait_fence_if_valid(fence_fd, "Surface::hook_queueBuffer fence");
+      (void)try_replace_anw_buffer_direct(anw_buffer, width, height, format,
+                                          "Surface::hook_queueBuffer");
+    }
   } else if (count <= 20) {
     LOGI("Surface::hook_queueBuffer hit #%llu anw=null", static_cast<unsigned long long>(count));
   }
@@ -1110,7 +1191,8 @@ int hook_return_buffer_checked_locked(
          surface_id_for_log, timestamp, readout_timestamp);
   }
 
-  if (output && stream != nullptr) {
+  if (output && stream != nullptr &&
+      write_mode_allows_camera3(current_write_mode())) {
     // Camera HAL may return a buffer with an unsignaled acquire fence.  If we
     // CPU-write before that fence signals, HAL/GPU can still overwrite our
     // replacement and the app sees the original frame.  Wait first, then write.
@@ -1140,6 +1222,10 @@ void install_hook() {
     LOGE("install_hook: GraphicBuffer API unresolved");
     return;
   }
+
+  const WriteMode initial_write_mode = current_write_mode();
+  LOGI("install_hook: write mode=%s (default surfaceOnly; touch %s for all hooks, %s for Camera3-only)",
+       write_mode_name(initial_write_mode), kWriteAllFlagPath, kWriteCamera3FlagPath);
 
   g_surface_set_usage_stub = shadowhook_hook_sym_name(
       "libgui.so",
