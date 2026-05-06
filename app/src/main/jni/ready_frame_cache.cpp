@@ -368,7 +368,7 @@ bool cache_has_fresh_frame_locked(const TargetKey &target, uint64_t generation) 
   return false;
 }
 
-bool BuildAndStoreLatestSource(std::vector<uint8_t> *source_copy) {
+bool BuildAndStoreLatestSource() {
   SharedMemoryFrameView source{};
   if (!CopyLatestSourceFrame(&source) || source.bytes == nullptr || source.size == 0) {
     return false;
@@ -392,15 +392,13 @@ bool BuildAndStoreLatestSource(std::vector<uint8_t> *source_copy) {
   }
 
   const uint64_t perf_start_ns = now_ns();
-  if (source_copy == nullptr) return false;
-  source_copy->assign(source.bytes, source.bytes + source.size);
   std::vector<ScaledI420Cache> scaled_cache;
   std::vector<std::shared_ptr<const ReadyI420Frame>> built_frames;
   built_frames.reserve(targets.size());
   for (const auto &target : targets) {
     ScaledI420Cache *scaled = find_or_build_scaled_i420(
-        &scaled_cache, source.width, source.height, source_copy->data(),
-        source_copy->size(), target.width, target.height);
+        &scaled_cache, source.width, source.height, source.bytes,
+        source.size, target.width, target.height);
     if (scaled == nullptr) continue;
     auto frame = std::make_shared<ReadyI420Frame>();
     frame->width = target.width;
@@ -415,6 +413,16 @@ bool BuildAndStoreLatestSource(std::vector<uint8_t> *source_copy) {
       continue;
     }
     built_frames.push_back(std::move(frame));
+  }
+
+  if (!IsSourceFrameStillValid(source)) {
+    const uint64_t count = g_publish_count.fetch_add(1, std::memory_order_relaxed) + 1;
+    if (ShouldLogCounter(count, 10, 120)) {
+      LOGW("ReadyFrameCache discard stale sourceGen=%llu slot=%u built=%zu ms=%.3f",
+           static_cast<unsigned long long>(source.generation), source.slot,
+           built_frames.size(), ns_to_ms(now_ns() - perf_start_ns));
+    }
+    return false;
   }
 
   {
@@ -434,9 +442,8 @@ bool BuildAndStoreLatestSource(std::vector<uint8_t> *source_copy) {
 void *ReadyWorkerMain(void *) {
   LOGI("ReadyFrameCache worker start");
   (void)setpriority(PRIO_PROCESS, static_cast<id_t>(syscall(SYS_gettid)), -4);
-  std::vector<uint8_t> source_copy;
   for (;;) {
-    const bool built = BuildAndStoreLatestSource(&source_copy);
+    const bool built = BuildAndStoreLatestSource();
     std::unique_lock<std::mutex> lock(g_ready_mutex);
     g_ready_cv.wait_for(lock, std::chrono::milliseconds(built ? 1 : 5));
   }

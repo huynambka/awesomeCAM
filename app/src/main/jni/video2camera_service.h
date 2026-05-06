@@ -54,6 +54,7 @@ void UpdateVideo2CameraTarget(int32_t width, int32_t height, int32_t format);
 bool PeekVideo2CameraTarget(VideoTargetState *out);
 bool GetVideo2CameraTargets(std::vector<VideoTargetState> *out);
 bool CopyLatestSourceFrame(SharedMemoryFrameView *out);
+bool IsSourceFrameStillValid(const SharedMemoryFrameView &view);
 bool GetSourceFrameStatus(SourceFrameStatus *out);
 void ClearSharedMemoryRegistration();
 

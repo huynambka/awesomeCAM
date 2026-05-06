@@ -539,6 +539,44 @@ bool CopyLatestSourceFrame(SharedMemoryFrameView *out) {
   return true;
 }
 
+bool IsSourceFrameStillValid(const SharedMemoryFrameView &view) {
+  if (!view.keepalive || view.bytes == nullptr || view.size == 0 ||
+      view.slot == kSharedMemoryNoSlot) {
+    return false;
+  }
+
+  std::shared_ptr<SharedMemoryMapping> mapping;
+  {
+    std::lock_guard<std::mutex> lock(g_memory_store.mutex);
+    mapping = g_memory_store.source;
+  }
+  if (!mapping || mapping.get() != view.keepalive.get() ||
+      mapping->frame_format != kFrameFormatI420 ||
+      view.slot >= mapping->slot_count) {
+    return false;
+  }
+
+  const auto *header = mapping->header();
+  if (!ValidateSharedMemoryHeader(header, mapping->width, mapping->height,
+                                  mapping->frame_format, mapping->slot_count,
+                                  mapping->slot_size, mapping->size)) {
+    return false;
+  }
+
+  const SharedMemoryRingSlot &slot = header->slots[view.slot];
+  const uint64_t begin_generation = AtomicLoadAcquire(&slot.begin_generation);
+  const uint64_t end_generation = AtomicLoadAcquire(&slot.end_generation);
+  const uint32_t data_offset = AtomicLoadAcquire(&slot.data_offset);
+  const uint32_t data_size = AtomicLoadAcquire(&slot.data_size);
+  const size_t expected_size = I420FrameSize(mapping->width, mapping->height);
+  const uint8_t *slot_bytes = static_cast<const uint8_t *>(mapping->addr) + data_offset;
+
+  return view.generation != 0 && begin_generation == view.generation &&
+         end_generation == view.generation && data_size >= expected_size &&
+         view.size == expected_size && view.bytes == slot_bytes &&
+         data_offset <= mapping->size && expected_size <= mapping->size - data_offset;
+}
+
 bool GetSourceFrameStatus(SourceFrameStatus *out) {
   if (out == nullptr) return false;
   *out = SourceFrameStatus{};
