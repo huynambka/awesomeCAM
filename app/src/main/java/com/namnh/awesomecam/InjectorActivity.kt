@@ -1,10 +1,14 @@
 package com.namnh.awesomecam
 
+import android.content.Context
 import android.content.Intent
+import android.net.Uri
 import android.os.Build
 import android.os.Bundle
+import android.provider.OpenableColumns
 import android.widget.Button
 import android.widget.TextView
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.widget.NestedScrollView
 import java.io.File
@@ -17,17 +21,24 @@ class InjectorActivity : AppCompatActivity() {
     private lateinit var buildTitleText: TextView
     private lateinit var feedController: Mp4FeedController
     private lateinit var feedButton: Button
+    private lateinit var selectedVideoText: TextView
+
+    private val chooseVideoLauncher = registerForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
+        uri ?: return@registerForActivityResult
+        runCatching {
+            contentResolver.takePersistableUriPermission(uri, Intent.FLAG_GRANT_READ_URI_PERMISSION)
+        }
+        handlePickedVideo(uri)
+    }
 
     private val listener = object : TelemetryStore.Listener {
         override fun onTelemetryChanged(snapshot: TelemetryStore.Snapshot) {
             runOnUiThread {
                 summaryText.text = buildSummary(snapshot.status)
                 summaryScroll.post {
-                    summaryScroll.fullScroll(NestedScrollView.FOCUS_DOWN)
+                    scrollToBottom(summaryScroll)
                 }
-                feedButton.text = getString(
-                    if (feedController.isRunning) R.string.feed_button_stop else R.string.feed_button_start,
-                )
+                updateFeedButton()
             }
         }
     }
@@ -41,6 +52,9 @@ class InjectorActivity : AppCompatActivity() {
         buildTitleText = findViewById(R.id.buildTitleText)
         feedController = Mp4FeedController(::appendStatus)
         feedButton = findViewById(R.id.feedButton)
+        selectedVideoText = findViewById(R.id.selectedVideoText)
+        updateFeedButton()
+        updateSelectedVideoText()
 
         val buildIdentity = buildIdentityLabel()
         buildTitleText.text = buildIdentity
@@ -51,7 +65,7 @@ class InjectorActivity : AppCompatActivity() {
                 "Stage 1: $RUNTIME_DIR/$SHADOWHOOK_LIB_NAME\n" +
                 "Stage 2: $RUNTIME_DIR/$HOOK_ASSET (call main_hook)\n" +
                 "Player: $RUNTIME_DIR/$PLAYER_ASSET + FFmpeg libs\n\n" +
-                "File source: ${Mp4FeedController.DEFAULT_VIDEO_PATH}",
+                "Video source: ${selectedVideoDisplayName()}",
         )
 
         findViewById<Button>(R.id.injectButton).setOnClickListener {
@@ -86,12 +100,17 @@ class InjectorActivity : AppCompatActivity() {
             if (feedController.isRunning) {
                 appendStatus("Stopping MP4 feed")
                 feedController.stop()
-                feedButton.text = getString(R.string.feed_button_start)
+                updateFeedButton()
             } else {
-                appendStatus("Starting MP4 feed from ${Mp4FeedController.DEFAULT_VIDEO_PATH}")
-                feedController.start(Mp4FeedController.DEFAULT_VIDEO_PATH)
-                feedButton.text = getString(R.string.feed_button_stop)
+                val sourceName = selectedVideoDisplayName()
+                appendStatus("Starting MP4 feed from $sourceName")
+                feedController.start(Mp4FeedController.DEFAULT_VIDEO_PATH, sourceName)
+                updateFeedButton()
             }
+        }
+
+        findViewById<Button>(R.id.chooseVideoButton).setOnClickListener {
+            chooseVideoLauncher.launch(arrayOf("video/*"))
         }
 
         findViewById<Button>(R.id.resetButton).setOnClickListener {
@@ -99,7 +118,7 @@ class InjectorActivity : AppCompatActivity() {
                 appendStatus("Restarting cameraserver")
                 feedController.stop()
                 appendStatus(runRoot(listOf("pkill cameraserver || killall cameraserver || true")))
-                runOnUiThread { feedButton.text = getString(R.string.feed_button_start) }
+                runOnUiThread { updateFeedButton() }
             }
         }
 
@@ -112,6 +131,9 @@ class InjectorActivity : AppCompatActivity() {
         super.onStart()
         TelemetryStore.addListener(listener)
         TelemetryStore.acquireLogcat()
+        feedController.refreshRunningStateAsync {
+            runOnUiThread { updateFeedButton() }
+        }
     }
 
     override fun onStop() {
@@ -122,6 +144,117 @@ class InjectorActivity : AppCompatActivity() {
 
     private fun buildIdentityLabel(): String {
         return "awesomeCAM ${BuildConfig.VERSION_NAME} · ${BuildConfig.ARCH_LABEL} · ${BuildConfig.GIT_SHA} · ${BuildConfig.BUILD_STAMP}"
+    }
+
+    private fun updateFeedButton() {
+        feedButton.text = getString(
+            if (feedController.isRunning) R.string.feed_button_stop else R.string.feed_button_start,
+        )
+    }
+
+    private fun updateSelectedVideoText(displayName: String = selectedVideoDisplayName()) {
+        selectedVideoText.text = getString(R.string.video_source_selected_format, displayName)
+    }
+
+    private fun setSelectedVideoStatus(displayName: String, statusRes: Int) {
+        selectedVideoText.text = getString(statusRes, displayName)
+    }
+
+    private fun selectedVideoDisplayName(): String {
+        return getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+            .getString(PREF_SELECTED_VIDEO_NAME, null)
+            ?.takeIf { it.isNotBlank() }
+            ?: getString(R.string.video_source_default_name)
+    }
+
+    private fun persistSelectedVideoDisplayName(displayName: String) {
+        getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+            .edit()
+            .putString(PREF_SELECTED_VIDEO_NAME, displayName)
+            .apply()
+    }
+
+    private fun handlePickedVideo(uri: Uri) {
+        val displayName = cleanDisplayName(
+            resolveDisplayName(uri) ?: getString(R.string.video_source_generic_name),
+        )
+        val previousDisplayName = selectedVideoDisplayName()
+        setSelectedVideoStatus(displayName, R.string.video_source_staging_format)
+        appendStatus("Video source: selected \"$displayName\"")
+
+        runAsync {
+            var localCopy: File? = null
+            try {
+                val stagedCopy = copyPickedVideoToTemp(uri, displayName)
+                localCopy = stagedCopy
+                val wasRunning = feedController.refreshRunningState()
+                if (wasRunning) {
+                    appendStatus("Video source: stopping running feed before switching video")
+                    val stopOutput = feedController.stopBlocking()
+                    appendStatus("Video feed: native player stop requested; source cache cleared\n$stopOutput")
+                    runOnUiThread { updateFeedButton() }
+                }
+
+                appendStatus("Video source: staging \"$displayName\" for native playback")
+                val output = runRoot(buildStageVideoCommands(stagedCopy))
+                persistSelectedVideoDisplayName(displayName)
+                appendStatus("Video source: \"$displayName\" is ready\n$output")
+                runOnUiThread {
+                    updateSelectedVideoText(displayName)
+                    updateFeedButton()
+                }
+
+                if (wasRunning) {
+                    appendStatus("Video source: restarting feed with \"$displayName\"")
+                    feedController.start(Mp4FeedController.DEFAULT_VIDEO_PATH, displayName)
+                    runOnUiThread { updateFeedButton() }
+                }
+            } catch (t: Throwable) {
+                runOnUiThread { updateSelectedVideoText(previousDisplayName) }
+                throw t
+            } finally {
+                localCopy?.delete()
+            }
+        }
+    }
+
+    private fun copyPickedVideoToTemp(uri: Uri, displayName: String): File {
+        val extension = displayName
+            .substringAfterLast('.', "mp4")
+            .filter { it.isLetterOrDigit() }
+            .take(8)
+            .ifBlank { "mp4" }
+        val outFile = File(cacheDir, "chosen-video-${System.currentTimeMillis()}.$extension")
+        val input = contentResolver.openInputStream(uri)
+            ?: error("Unable to open selected video")
+        input.use { source ->
+            outFile.outputStream().use { sink ->
+                source.copyTo(sink)
+            }
+        }
+        return outFile
+    }
+
+    private fun resolveDisplayName(uri: Uri): String? {
+        if (uri.scheme == "content") {
+            contentResolver.query(uri, arrayOf(OpenableColumns.DISPLAY_NAME), null, null, null)?.use { cursor ->
+                val column = cursor.getColumnIndex(OpenableColumns.DISPLAY_NAME)
+                if (column >= 0 && cursor.moveToFirst()) {
+                    cursor.getString(column)?.takeIf { it.isNotBlank() }?.let { return it }
+                }
+            }
+        }
+        return uri.lastPathSegment
+            ?.substringAfterLast('/')
+            ?.takeIf { it.isNotBlank() }
+    }
+
+    private fun cleanDisplayName(name: String): String {
+        return name
+            .replace(Regex("[\\r\\n\\t]+"), " ")
+            .trim()
+            .take(96)
+            .ifBlank { getString(R.string.video_source_generic_name) }
     }
 
     private fun runAsync(block: () -> Unit) {
@@ -141,6 +274,12 @@ class InjectorActivity : AppCompatActivity() {
     private fun buildSummary(status: String): String {
         if (status.isBlank()) return getString(R.string.summary_placeholder)
         return status.trim()
+    }
+
+    private fun scrollToBottom(scrollView: NestedScrollView) {
+        val child = scrollView.getChildAt(0) ?: return
+        val y = (child.height - scrollView.height).coerceAtLeast(0)
+        scrollView.scrollTo(0, y)
     }
 
     private fun extractAsset(name: String): File {
@@ -229,6 +368,22 @@ class InjectorActivity : AppCompatActivity() {
         }
     }
 
+    private fun buildStageVideoCommands(source: File): List<String> {
+        val tmpDst = "$RUNTIME_DIR/.input.mp4.tmp"
+        val finalDst = Mp4FeedController.DEFAULT_VIDEO_PATH
+        return listOf(
+            "mkdir -p ${shellQuote(RUNTIME_DIR)}",
+            "rm -f ${shellQuote(tmpDst)}",
+            "cp ${shellQuote(source.absolutePath)} ${shellQuote(tmpDst)}",
+            "chmod 0644 ${shellQuote(tmpDst)}",
+            "chcon u:object_r:awesomecam_source_file:s0 ${shellQuote(tmpDst)} 2>/dev/null || true",
+            "mv -f ${shellQuote(tmpDst)} ${shellQuote(finalDst)}",
+            "chmod 0644 ${shellQuote(finalDst)}",
+            "chcon u:object_r:awesomecam_source_file:s0 ${shellQuote(finalDst)} 2>/dev/null || true",
+            "echo 'STAGED selected video for native playback'",
+        )
+    }
+
     private fun runRoot(commands: List<String>): String {
         val process = ProcessBuilder("su")
             .redirectErrorStream(true)
@@ -264,6 +419,8 @@ class InjectorActivity : AppCompatActivity() {
         private const val PLAYER_ASSET = "awesomecam_player"
         private const val HOOK_ASSET = "libhook.so"
         private const val SHADOWHOOK_LIB_NAME = "libshadowhook.so"
+        private const val PREFS_NAME = "video_source"
+        private const val PREF_SELECTED_VIDEO_NAME = "selected_video_display_name"
         private val FFMPEG_LIB_NAMES = listOf(
             "libffmpeg.so",
             "libffmpegexe.so",

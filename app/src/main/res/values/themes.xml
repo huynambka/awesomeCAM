@@ -7,9 +7,13 @@
         <item name="colorSecondary">@color/miuix_accent_soft</item>
         <item name="colorSurface">@color/miuix_surface</item>
         <item name="android:colorBackground">@color/miuix_page_bg</item>
+        <item name="android:fontFamily">sans</item>
         <item name="android:statusBarColor">@color/miuix_page_bg</item>
         <item name="android:navigationBarColor">@color/miuix_page_bg</item>
         <item name="android:windowBackground">@color/miuix_page_bg</item>
+        <item name="android:windowLightStatusBar">true</item>
+        <item name="android:windowLightNavigationBar">true</item>
+        <item name="android:windowNoTitle">true</item>
     </style>
 
 </resources>

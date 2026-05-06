@@ -1,17 +1,21 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <color name="miuix_page_bg">#F5F7FB</color>
+    <!-- Minimalism 2.0: warm canvas, typographic hierarchy, one quiet utility accent. -->
+    <color name="miuix_page_bg">#FAFAF6</color>
     <color name="miuix_surface">#FFFFFFFF</color>
-    <color name="miuix_surface_alt">#F2F5FA</color>
-    <color name="miuix_brand">#1677FF</color>
-    <color name="miuix_accent_soft">#DCEBFF</color>
-    <color name="miuix_badge_bg">#EAF2FF</color>
-    <color name="miuix_stroke">#E5EAF2</color>
-    <color name="miuix_stroke_strong">#D6DDE8</color>
-    <color name="miuix_text_primary">#101828</color>
-    <color name="miuix_text_secondary">#667085</color>
-    <color name="miuix_log_bg">#0F172A</color>
-    <color name="miuix_log_text">#CDE7FF</color>
+    <color name="miuix_surface_alt">#F1F0EA</color>
+    <color name="miuix_surface_deep">#E9E7DD</color>
+    <color name="miuix_brand">#101010</color>
+    <color name="miuix_accent_soft">#DDF7A1</color>
+    <color name="miuix_accent_wash">#55DDF7A1</color>
+    <color name="miuix_badge_bg">#EEF8D9</color>
+    <color name="miuix_stroke">#E5E2D7</color>
+    <color name="miuix_stroke_strong">#D3D0C2</color>
+    <color name="miuix_text_primary">#111111</color>
+    <color name="miuix_text_secondary">#747266</color>
+    <color name="miuix_text_tertiary">#9A978A</color>
+    <color name="miuix_log_bg">#111111</color>
+    <color name="miuix_log_text">#F3F1E8</color>
 
     <!-- legacy aliases kept so old drawables still compile -->
     <color name="cyan_300">@color/miuix_accent_soft</color>
@@ -19,7 +23,7 @@
     <color name="cyan_500">@color/miuix_brand</color>
     <color name="cyan_700">@color/miuix_brand</color>
     <color name="cyan_900">@color/miuix_text_primary</color>
-    <color name="yellow_300">#FFE7A3</color>
+    <color name="yellow_300">#F3E6B2</color>
     <color name="page_bg_start">@color/miuix_page_bg</color>
     <color name="page_bg_end">@color/miuix_page_bg</color>
     <color name="paper">@color/miuix_surface</color>

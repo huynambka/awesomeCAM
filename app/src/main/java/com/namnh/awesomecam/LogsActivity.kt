@@ -18,8 +18,8 @@ class LogsActivity : AppCompatActivity() {
             runOnUiThread {
                 statusText.text = snapshot.status.ifBlank { getString(R.string.status_empty) }
                 logText.text = snapshot.log.ifBlank { getString(R.string.log_empty) }
-                statusScroll.post { statusScroll.fullScroll(ScrollView.FOCUS_DOWN) }
-                logScroll.post { logScroll.fullScroll(ScrollView.FOCUS_DOWN) }
+                statusScroll.post { scrollToBottom(statusScroll) }
+                logScroll.post { scrollToBottom(logScroll) }
             }
         }
     }
@@ -52,5 +52,11 @@ class LogsActivity : AppCompatActivity() {
         TelemetryStore.removeListener(listener)
         TelemetryStore.releaseLogcat()
         super.onStop()
+    }
+
+    private fun scrollToBottom(scrollView: ScrollView) {
+        val child = scrollView.getChildAt(0) ?: return
+        val y = (child.height - scrollView.height).coerceAtLeast(0)
+        scrollView.scrollTo(0, y)
     }
 }

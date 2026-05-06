@@ -1,94 +1,360 @@
 <?xml version="1.0" encoding="utf-8"?>
 <ScrollView xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto"
     android:layout_width="match_parent"
     android:layout_height="match_parent"
-    android:background="@color/miuix_page_bg"
-    android:fillViewport="true">
+    android:background="@drawable/bg_m2_page"
+    android:fillViewport="true"
+    android:overScrollMode="ifContentScrolls">
 
     <LinearLayout
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
         android:orientation="vertical"
-        android:padding="20dp">
+        android:paddingStart="18dp"
+        android:paddingTop="24dp"
+        android:paddingEnd="18dp"
+        android:paddingBottom="30dp">
 
         <LinearLayout
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:gravity="center_vertical"
-            android:orientation="horizontal">
+            android:background="@drawable/bg_m2_hero"
+            android:elevation="1dp"
+            android:orientation="vertical"
+            android:paddingStart="20dp"
+            android:paddingTop="20dp"
+            android:paddingEnd="20dp"
+            android:paddingBottom="20dp">
+
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:gravity="center_vertical"
+                android:orientation="horizontal">
+
+                <TextView
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:background="@drawable/bg_miuix_badge"
+                    android:letterSpacing="0.10"
+                    android:paddingStart="13dp"
+                    android:paddingTop="7dp"
+                    android:paddingEnd="13dp"
+                    android:paddingBottom="7dp"
+                    android:text="@string/miuix_badge"
+                    android:textColor="@color/miuix_brand"
+                    android:textSize="10sp"
+                    android:textStyle="bold" />
+
+                <Space
+                    android:layout_width="0dp"
+                    android:layout_height="1dp"
+                    android:layout_weight="1" />
+
+                <TextView
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:background="@drawable/bg_m2_status_pill"
+                    android:paddingStart="12dp"
+                    android:paddingTop="7dp"
+                    android:paddingEnd="12dp"
+                    android:paddingBottom="7dp"
+                    android:text="@string/m2_status_ready"
+                    android:textColor="@color/miuix_text_primary"
+                    android:textSize="11sp"
+                    android:textStyle="bold" />
+            </LinearLayout>
+
+            <TextView
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="20dp"
+                android:includeFontPadding="false"
+                android:letterSpacing="-0.03"
+                android:text="@string/app_name"
+                android:textColor="@color/miuix_text_primary"
+                android:textSize="42sp"
+                android:textStyle="bold" />
+
+            <TextView
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="12dp"
+                android:lineSpacingExtra="4dp"
+                android:text="@string/miuix_home_subtitle"
+                android:textColor="@color/miuix_text_secondary"
+                android:textSize="15sp" />
+
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="24dp"
+                android:background="@drawable/bg_m2_source_panel"
+                android:orientation="vertical"
+                android:paddingStart="16dp"
+                android:paddingTop="15dp"
+                android:paddingEnd="16dp"
+                android:paddingBottom="15dp">
+
+                <TextView
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:letterSpacing="0.12"
+                    android:text="@string/m2_source_label"
+                    android:textAllCaps="true"
+                    android:textColor="@color/miuix_text_tertiary"
+                    android:textSize="10sp"
+                    android:textStyle="bold" />
+
+                <TextView
+                    android:id="@+id/selectedVideoText"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="8dp"
+                    android:ellipsize="middle"
+                    android:singleLine="true"
+                    android:text="@string/video_source_initial_label"
+                    android:textColor="@color/miuix_text_primary"
+                    android:textSize="16sp"
+                    android:textStyle="bold" />
+
+                <androidx.appcompat.widget.AppCompatButton
+                    android:id="@+id/chooseVideoButton"
+                    android:layout_width="match_parent"
+                    android:layout_height="48dp"
+                    android:layout_marginTop="14dp"
+                    android:background="@drawable/bg_miuix_outline_button"
+                    android:backgroundTint="@null"
+                    android:ellipsize="end"
+                    android:gravity="center"
+                    android:includeFontPadding="false"
+                    android:minHeight="0dp"
+                    android:minWidth="0dp"
+                    android:paddingStart="10dp"
+                    android:paddingEnd="10dp"
+                    android:singleLine="true"
+                    android:stateListAnimator="@null"
+                    android:text="@string/choose_video_button"
+                    android:textAllCaps="false"
+                    android:textColor="@color/miuix_text_primary"
+                    android:textSize="14sp"
+                    android:textStyle="bold"
+                    app:backgroundTint="@null" />
+            </LinearLayout>
+
+            <TextView
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="12dp"
+                android:text="@string/m2_source_hint"
+                android:textColor="@color/miuix_text_secondary"
+                android:textSize="12sp" />
+
+            <View
+                android:layout_width="match_parent"
+                android:layout_height="1dp"
+                android:layout_marginTop="22dp"
+                android:background="@drawable/bg_m2_divider" />
 
             <TextView
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
-                android:background="@drawable/bg_miuix_badge"
-                android:paddingStart="12dp"
-                android:paddingTop="6dp"
-                android:paddingEnd="12dp"
-                android:paddingBottom="6dp"
-                android:text="@string/miuix_badge"
-                android:textColor="@color/miuix_brand"
-                android:textSize="12sp"
+                android:layout_marginTop="18dp"
+                android:letterSpacing="0.12"
+                android:text="@string/m2_build_label"
+                android:textAllCaps="true"
+                android:textColor="@color/miuix_text_tertiary"
+                android:textSize="10sp"
                 android:textStyle="bold" />
+
+            <TextView
+                android:id="@+id/buildTitleText"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="8dp"
+                android:fontFamily="monospace"
+                android:lineSpacingExtra="3dp"
+                android:textColor="@color/miuix_text_primary"
+                android:textSize="12sp" />
         </LinearLayout>
-
-        <TextView
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:layout_marginTop="14dp"
-            android:text="@string/app_name"
-            android:textColor="@color/miuix_text_primary"
-            android:textSize="34sp"
-            android:textStyle="bold" />
-
-        <TextView
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:layout_marginTop="8dp"
-            android:text="@string/miuix_home_subtitle"
-            android:textColor="@color/miuix_text_secondary"
-            android:textSize="15sp" />
-
-        <TextView
-            android:id="@+id/buildTitleText"
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:layout_marginTop="10dp"
-            android:background="@drawable/bg_miuix_inline_panel"
-            android:fontFamily="monospace"
-            android:padding="12dp"
-            android:textColor="@color/miuix_brand"
-            android:textSize="13sp"
-            android:textStyle="bold" />
 
         <LinearLayout
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:layout_marginTop="18dp"
             android:background="@drawable/bg_miuix_card"
+            android:elevation="1dp"
             android:orientation="vertical"
-            android:padding="20dp">
+            android:padding="18dp">
 
-            <TextView
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:text="@string/miuix_pipeline_title"
-                android:textColor="@color/miuix_text_primary"
-                android:textSize="18sp"
-                android:textStyle="bold" />
-
-            <TextView
+            <LinearLayout
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
-                android:layout_marginTop="6dp"
-                android:text="@string/miuix_pipeline_subtitle"
-                android:textColor="@color/miuix_text_secondary"
-                android:textSize="14sp" />
+                android:orientation="horizontal">
+
+                <androidx.appcompat.widget.AppCompatButton
+                    android:id="@+id/injectButton"
+                    android:layout_width="0dp"
+                    android:layout_height="52dp"
+                    android:layout_weight="1"
+                    android:background="@drawable/bg_miuix_primary_button"
+                    android:minHeight="0dp"
+                    android:minWidth="0dp"
+                    android:backgroundTint="@null"
+                    android:ellipsize="end"
+                    android:gravity="center"
+                    android:includeFontPadding="false"
+                    android:paddingStart="8dp"
+                    android:paddingEnd="8dp"
+                    android:singleLine="true"
+                    app:backgroundTint="@null"
+                    android:stateListAnimator="@null"
+                    android:text="@string/inject_button"
+                    android:textAllCaps="false"
+                    android:textColor="@android:color/white"
+                    android:textSize="15sp"
+                    android:textStyle="bold" />
+
+                <androidx.appcompat.widget.AppCompatButton
+                    android:id="@+id/feedButton"
+                    android:layout_width="0dp"
+                    android:layout_height="52dp"
+                    android:layout_marginStart="12dp"
+                    android:layout_weight="1"
+                    android:background="@drawable/bg_miuix_secondary_button"
+                    android:minHeight="0dp"
+                    android:minWidth="0dp"
+                    android:backgroundTint="@null"
+                    android:ellipsize="end"
+                    android:gravity="center"
+                    android:includeFontPadding="false"
+                    android:paddingStart="8dp"
+                    android:paddingEnd="8dp"
+                    android:singleLine="true"
+                    app:backgroundTint="@null"
+                    android:stateListAnimator="@null"
+                    android:text="@string/feed_button_start"
+                    android:textAllCaps="false"
+                    android:textColor="@color/miuix_text_primary"
+                    android:textSize="15sp"
+                    android:textStyle="bold" />
+            </LinearLayout>
+
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="12dp"
+                android:orientation="horizontal">
+
+                <androidx.appcompat.widget.AppCompatButton
+                    android:id="@+id/resetButton"
+                    android:layout_width="0dp"
+                    android:layout_height="52dp"
+                    android:layout_weight="1"
+                    android:background="@drawable/bg_miuix_outline_button"
+                    android:minHeight="0dp"
+                    android:minWidth="0dp"
+                    android:backgroundTint="@null"
+                    android:ellipsize="end"
+                    android:gravity="center"
+                    android:includeFontPadding="false"
+                    android:paddingStart="8dp"
+                    android:paddingEnd="8dp"
+                    android:singleLine="true"
+                    app:backgroundTint="@null"
+                    android:stateListAnimator="@null"
+                    android:text="@string/reset_button"
+                    android:textAllCaps="false"
+                    android:textColor="@color/miuix_text_primary"
+                    android:textSize="13sp"
+                    android:textStyle="bold" />
+
+                <androidx.appcompat.widget.AppCompatButton
+                    android:id="@+id/openLogsButton"
+                    android:layout_width="0dp"
+                    android:layout_height="52dp"
+                    android:layout_marginStart="12dp"
+                    android:layout_weight="1"
+                    android:background="@drawable/bg_miuix_outline_button"
+                    android:minHeight="0dp"
+                    android:minWidth="0dp"
+                    android:backgroundTint="@null"
+                    android:ellipsize="end"
+                    android:gravity="center"
+                    android:includeFontPadding="false"
+                    android:paddingStart="8dp"
+                    android:paddingEnd="8dp"
+                    android:singleLine="true"
+                    app:backgroundTint="@null"
+                    android:stateListAnimator="@null"
+                    android:text="@string/open_logs_button"
+                    android:textAllCaps="false"
+                    android:textColor="@color/miuix_text_primary"
+                    android:textSize="13sp"
+                    android:textStyle="bold" />
+            </LinearLayout>
+        </LinearLayout>
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="18dp"
+            android:background="@drawable/bg_miuix_card"
+            android:elevation="1dp"
+            android:orientation="vertical"
+            android:padding="18dp">
+
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:gravity="center_vertical"
+                android:orientation="horizontal">
+
+                <LinearLayout
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_weight="1"
+                    android:orientation="vertical">
+
+                    <TextView
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:includeFontPadding="false"
+                        android:text="@string/status_title"
+                        android:textColor="@color/miuix_text_primary"
+                        android:textSize="24sp"
+                        android:textStyle="bold" />
+
+                    <TextView
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="7dp"
+                        android:text="@string/status_subtitle"
+                        android:textColor="@color/miuix_text_secondary"
+                        android:textSize="13sp" />
+                </LinearLayout>
+
+                <TextView
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_marginStart="12dp"
+                    android:background="@drawable/bg_m2_status_pill"
+                    android:paddingStart="12dp"
+                    android:paddingTop="7dp"
+                    android:paddingEnd="12dp"
+                    android:paddingBottom="7dp"
+                    android:text="@string/m2_live_label"
+                    android:textColor="@color/miuix_text_primary"
+                    android:textSize="11sp"
+                    android:textStyle="bold" />
+            </LinearLayout>
 
             <androidx.core.widget.NestedScrollView
                 android:id="@+id/summaryScroll"
                 android:layout_width="match_parent"
-                android:layout_height="320dp"
-                android:layout_marginTop="16dp"
+                android:layout_height="280dp"
+                android:layout_marginTop="18dp"
                 android:background="@drawable/bg_miuix_inline_panel"
                 android:fillViewport="true"
                 android:overScrollMode="ifContentScrolls">
@@ -98,11 +364,11 @@
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
                     android:fontFamily="monospace"
-                    android:lineSpacingExtra="2dp"
+                    android:lineSpacingExtra="3dp"
                     android:padding="16dp"
                     android:textColor="@color/miuix_text_primary"
                     android:textIsSelectable="true"
-                    android:textSize="14sp" />
+                    android:textSize="13sp" />
             </androidx.core.widget.NestedScrollView>
         </LinearLayout>
 
@@ -110,86 +376,25 @@
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:layout_marginTop="18dp"
-            android:orientation="horizontal">
-
-            <Button
-                android:id="@+id/injectButton"
-                android:layout_width="0dp"
-                android:layout_height="56dp"
-                android:layout_weight="1"
-                android:background="@drawable/bg_miuix_primary_button"
-                android:text="@string/inject_button"
-                android:textAllCaps="false"
-                android:textColor="@android:color/white"
-                android:textSize="15sp"
-                android:textStyle="bold" />
-
-            <Button
-                android:id="@+id/feedButton"
-                android:layout_width="0dp"
-                android:layout_height="56dp"
-                android:layout_marginStart="12dp"
-                android:layout_weight="1"
-                android:background="@drawable/bg_miuix_secondary_button"
-                android:text="@string/feed_button_start"
-                android:textAllCaps="false"
-                android:textColor="@color/miuix_text_primary"
-                android:textSize="15sp"
-                android:textStyle="bold" />
-        </LinearLayout>
-
-        <LinearLayout
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:layout_marginTop="12dp"
-            android:orientation="horizontal">
-
-            <Button
-                android:id="@+id/resetButton"
-                android:layout_width="0dp"
-                android:layout_height="52dp"
-                android:layout_weight="1"
-                android:background="@drawable/bg_miuix_outline_button"
-                android:text="@string/reset_button"
-                android:textAllCaps="false"
-                android:textColor="@color/miuix_text_primary"
-                android:textSize="14sp"
-                android:textStyle="bold" />
-
-            <Button
-                android:id="@+id/openLogsButton"
-                android:layout_width="0dp"
-                android:layout_height="52dp"
-                android:layout_marginStart="12dp"
-                android:layout_weight="1"
-                android:background="@drawable/bg_miuix_outline_button"
-                android:text="@string/open_logs_button"
-                android:textAllCaps="false"
-                android:textColor="@color/miuix_text_primary"
-                android:textSize="14sp"
-                android:textStyle="bold" />
-        </LinearLayout>
-
-        <LinearLayout
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:layout_marginTop="18dp"
             android:background="@drawable/bg_miuix_card"
+            android:elevation="1dp"
             android:orientation="vertical"
-            android:padding="20dp">
+            android:padding="18dp">
 
             <TextView
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
+                android:includeFontPadding="false"
                 android:text="@string/miuix_logs_card_title"
                 android:textColor="@color/miuix_text_primary"
-                android:textSize="18sp"
+                android:textSize="24sp"
                 android:textStyle="bold" />
 
             <TextView
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
                 android:layout_marginTop="8dp"
+                android:lineSpacingExtra="3dp"
                 android:text="@string/miuix_logs_card_subtitle"
                 android:textColor="@color/miuix_text_secondary"
                 android:textSize="14sp" />
