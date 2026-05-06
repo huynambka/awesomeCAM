@@ -193,7 +193,7 @@ class InjectorActivity : AppCompatActivity() {
                     runOnUiThread { updateFeedButton() }
                 }
 
-                appendStatus("Video source: staging \"$displayName\" and prescaling variants")
+                appendStatus("Video source: staging \"$displayName\" and normalizing 30fps variants")
                 val localFfmpegLibs = extractBundledFfmpegRuntime()
                 val output = runRoot(buildFfmpegRuntimeCommands(localFfmpegLibs) + buildStageVideoCommands(stagedCopy))
                 persistSelectedVideoDisplayName(displayName)
@@ -405,7 +405,7 @@ class InjectorActivity : AppCompatActivity() {
             add("chmod 0644 ${shellQuote(finalDst)}")
             add("chcon u:object_r:awesomecam_source_file:s0 ${shellQuote(finalDst)} 2>/dev/null || true")
             add(buildPrescaleVariantCommand(finalDst))
-            add("echo 'STAGED selected video and prescaled variants for MediaCodec playback'")
+            add("echo 'STAGED selected video and normalized prescaled variants for MediaCodec playback'")
         }
     }
 
@@ -428,6 +428,10 @@ class InjectorActivity : AppCompatActivity() {
               exit 1
             fi
             ENCODE_TIMEOUT=8
+            MANIFEST="$RUNTIME_DIR/input_normalization.txt"
+            rm -f "${'$'}MANIFEST"
+            echo "source=${'$'}SRC" > "${'$'}MANIFEST"
+            echo "fps=30 pix_fmt=yuv420p audio=disabled filter=center-crop" >> "${'$'}MANIFEST"
             rm -f ${shellQuote("$RUNTIME_DIR/input_1440x1080.mp4")} ${shellQuote("$RUNTIME_DIR/input_1280x720.mp4")} ${shellQuote("$RUNTIME_DIR/input_1920x1080.mp4")} ${shellQuote("$RUNTIME_DIR/input_640x480.mp4")}
             make_variant() {
               W="${'$'}1"
@@ -441,17 +445,18 @@ class InjectorActivity : AppCompatActivity() {
                 rm -f "${'$'}TMP"
                 echo "PRESCALE ${'$'}{W}x${'$'}{H}: trying encoder=${'$'}ENC"
                 if [ "${'$'}ENC" = "h264_mediacodec" ]; then
-                  timeout "${'$'}ENCODE_TIMEOUT" "${'$'}FFMPEG" -hide_banner -nostdin -y -i "${'$'}SRC" -vf "${'$'}FILTER" -an -r 30 -c:v h264_mediacodec -b:v 8000000 -movflags +faststart -f mp4 "${'$'}TMP" > "${'$'}LOG" 2>&1
+                  timeout "${'$'}ENCODE_TIMEOUT" "${'$'}FFMPEG" -hide_banner -nostdin -y -i "${'$'}SRC" -map 0:v:0 -vf "${'$'}FILTER" -an -fps_mode cfr -r 30 -c:v h264_mediacodec -pix_fmt yuv420p -b:v 8000000 -g 30 -bf 0 -movflags +faststart -f mp4 "${'$'}TMP" > "${'$'}LOG" 2>&1
                 elif [ "${'$'}ENC" = "libx264" ]; then
-                  timeout "${'$'}ENCODE_TIMEOUT" "${'$'}FFMPEG" -hide_banner -nostdin -y -i "${'$'}SRC" -vf "${'$'}FILTER" -an -r 30 -c:v libx264 -pix_fmt yuv420p -movflags +faststart -f mp4 "${'$'}TMP" > "${'$'}LOG" 2>&1
+                  timeout "${'$'}ENCODE_TIMEOUT" "${'$'}FFMPEG" -hide_banner -nostdin -y -i "${'$'}SRC" -map 0:v:0 -vf "${'$'}FILTER" -an -fps_mode cfr -r 30 -c:v libx264 -preset veryfast -tune zerolatency -profile:v baseline -level 4.1 -g 30 -keyint_min 30 -sc_threshold 0 -bf 0 -pix_fmt yuv420p -movflags +faststart -f mp4 "${'$'}TMP" > "${'$'}LOG" 2>&1
                 else
-                  timeout "${'$'}ENCODE_TIMEOUT" "${'$'}FFMPEG" -hide_banner -nostdin -y -i "${'$'}SRC" -vf "${'$'}FILTER" -an -r 30 -c:v mpeg4 -q:v 4 -pix_fmt yuv420p -movflags +faststart -f mp4 "${'$'}TMP" > "${'$'}LOG" 2>&1
+                  timeout "${'$'}ENCODE_TIMEOUT" "${'$'}FFMPEG" -hide_banner -nostdin -y -i "${'$'}SRC" -map 0:v:0 -vf "${'$'}FILTER" -an -fps_mode cfr -r 30 -c:v mpeg4 -q:v 4 -g 30 -bf 0 -pix_fmt yuv420p -movflags +faststart -f mp4 "${'$'}TMP" > "${'$'}LOG" 2>&1
                 fi
                 RC="${'$'}?"
                 if [ "${'$'}RC" -eq 0 ] && [ -s "${'$'}TMP" ]; then
                   mv -f "${'$'}TMP" "${'$'}OUT"
                   chmod 0644 "${'$'}OUT"
                   chcon u:object_r:awesomecam_source_file:s0 "${'$'}OUT" 2>/dev/null || true
+                  echo "variant=${'$'}{W}x${'$'}{H} encoder=${'$'}ENC output=${'$'}OUT" >> "${'$'}MANIFEST"
                   echo "PRESCALED ${'$'}{W}x${'$'}{H}: encoder=${'$'}ENC out=${'$'}OUT"
                   return 0
                 fi
@@ -463,6 +468,8 @@ class InjectorActivity : AppCompatActivity() {
               return 1
             }
             $calls
+            chmod 0644 "${'$'}MANIFEST"
+            chcon u:object_r:awesomecam_source_file:s0 "${'$'}MANIFEST" 2>/dev/null || true
         """.trimIndent()
     }
 
