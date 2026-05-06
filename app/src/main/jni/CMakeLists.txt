@@ -21,6 +21,7 @@ set_target_properties(injector_helper PROPERTIES
 
 add_executable(awesomecam_player
     awesomecam_player.cpp
+    libyuv_runtime.cpp
     video2camera_ndk.cpp
 )
 set_target_properties(awesomecam_player PROPERTIES

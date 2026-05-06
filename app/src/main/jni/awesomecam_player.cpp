@@ -10,8 +10,10 @@
 #include <signal.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/resource.h>
 #include <sys/mman.h>
 #include <sys/stat.h>
+#include <sys/syscall.h>
 #include <time.h>
 #include <unistd.h>
 
@@ -24,6 +26,7 @@
 #include <thread>
 #include <vector>
 
+#include "libyuv_runtime.h"
 #include "video2camera_ipc.h"
 #include "video2camera_ndk.h"
 
@@ -88,6 +91,13 @@ struct SourceRing {
   awesomecam::SharedMemoryRingHeader *header() const {
     return reinterpret_cast<awesomecam::SharedMemoryRingHeader *>(addr);
   }
+};
+
+struct RingWriteSlot {
+  uint8_t *data = nullptr;
+  uint32_t slot_index = awesomecam::kSharedMemoryNoSlot;
+  uint64_t generation = 0;
+  int64_t pts_us = 0;
 };
 
 enum class OutputLayoutKind {
@@ -614,8 +624,9 @@ bool InitSourceRing(SourceRing *ring, int32_t width, int32_t height) {
   return true;
 }
 
-bool WriteFrame(SourceRing *ring, const uint8_t *i420, size_t size, int64_t pts_us) {
-  if (ring == nullptr || ring->addr == nullptr || i420 == nullptr || size < ring->slot_size) {
+bool BeginWriteFrame(SourceRing *ring, int64_t pts_us, RingWriteSlot *write) {
+  if (ring == nullptr || write == nullptr || ring->addr == nullptr ||
+      ring->slot_size == 0) {
     return false;
   }
   auto *header = ring->header();
@@ -626,13 +637,35 @@ bool WriteFrame(SourceRing *ring, const uint8_t *i420, size_t size, int64_t pts_
   AtomicStoreRelease(&slot.begin_generation, generation);
   AtomicStoreRelease(&slot.pts_us, pts_us);
   AtomicStoreRelease(&slot.data_size, ring->slot_size);
-  uint8_t *dst = static_cast<uint8_t *>(ring->addr) + slot.data_offset;
-  memcpy(dst, i420, ring->slot_size);
+  write->data = static_cast<uint8_t *>(ring->addr) + slot.data_offset;
+  write->slot_index = slot_index;
+  write->generation = generation;
+  write->pts_us = pts_us;
+  return true;
+}
+
+void FinishWriteFrame(SourceRing *ring, const RingWriteSlot &write) {
+  if (ring == nullptr || ring->addr == nullptr ||
+      write.slot_index >= awesomecam::kSharedMemoryRingSlotCount) {
+    return;
+  }
+  auto *header = ring->header();
+  awesomecam::SharedMemoryRingSlot &slot = header->slots[write.slot_index];
   AtomicStoreRelease(&slot.data_size, ring->slot_size);
-  AtomicStoreRelease(&slot.pts_us, pts_us);
-  AtomicStoreRelease(&slot.end_generation, generation);
-  AtomicStoreRelease(&header->latest_slot, slot_index);
-  AtomicStoreRelease(&header->latest_generation, generation);
+  AtomicStoreRelease(&slot.pts_us, write.pts_us);
+  AtomicStoreRelease(&slot.end_generation, write.generation);
+  AtomicStoreRelease(&header->latest_slot, write.slot_index);
+  AtomicStoreRelease(&header->latest_generation, write.generation);
+}
+
+bool WriteFrame(SourceRing *ring, const uint8_t *i420, size_t size, int64_t pts_us) {
+  if (ring == nullptr || ring->addr == nullptr || i420 == nullptr || size < ring->slot_size) {
+    return false;
+  }
+  RingWriteSlot write{};
+  if (!BeginWriteFrame(ring, pts_us, &write) || write.data == nullptr) return false;
+  memcpy(write.data, i420, ring->slot_size);
+  FinishWriteFrame(ring, write);
   return true;
 }
 
@@ -821,8 +854,25 @@ bool UpdateOutputLayout(AMediaFormat *fmt, int32_t fallback_w, int32_t fallback_
   return true;
 }
 
-bool ConvertPlanarToI420(const uint8_t *src, size_t src_size, const OutputLayout &layout,
-                         std::vector<uint8_t> *dst) {
+bool I420PlanesForBuffer(uint8_t *dst, size_t dst_size, int32_t width, int32_t height,
+                         uint8_t **dst_y, uint8_t **dst_u, uint8_t **dst_v) {
+  if (dst == nullptr || dst_y == nullptr || dst_u == nullptr || dst_v == nullptr ||
+      width <= 0 || height <= 0) {
+    return false;
+  }
+  const size_t needed = awesomecam::I420FrameSize(width, height);
+  if (needed == 0 || dst_size < needed) return false;
+  const size_t y_size = static_cast<size_t>(width) * height;
+  const size_t c_size = ChromaWidth(width) * ChromaHeight(height);
+  *dst_y = dst;
+  *dst_u = dst + y_size;
+  *dst_v = dst + y_size + c_size;
+  return true;
+}
+
+bool ConvertPlanarToI420Buffer(const uint8_t *src, size_t src_size,
+                               const OutputLayout &layout,
+                               uint8_t *dst, size_t dst_size) {
   if (src == nullptr || dst == nullptr || layout.width <= 0 || layout.height <= 0) return false;
   const size_t y_plane_size = static_cast<size_t>(layout.stride) * layout.slice_height;
   const int32_t chroma_stride = std::max<int32_t>(1, layout.stride / 2);
@@ -830,15 +880,15 @@ bool ConvertPlanarToI420(const uint8_t *src, size_t src_size, const OutputLayout
   const size_t chroma_plane_size = static_cast<size_t>(chroma_stride) * chroma_slice_height;
   if (src_size < y_plane_size + 2 * chroma_plane_size) return false;
 
-  const size_t dst_size = awesomecam::I420FrameSize(layout.width, layout.height);
-  dst->resize(dst_size);
   const size_t cw = ChromaWidth(layout.width);
   const size_t ch = ChromaHeight(layout.height);
-  const size_t y_size = static_cast<size_t>(layout.width) * layout.height;
-  const size_t c_size = cw * ch;
-  uint8_t *dst_y = dst->data();
-  uint8_t *dst_u = dst_y + y_size;
-  uint8_t *dst_v = dst_u + c_size;
+  uint8_t *dst_y = nullptr;
+  uint8_t *dst_u = nullptr;
+  uint8_t *dst_v = nullptr;
+  if (!I420PlanesForBuffer(dst, dst_size, layout.width, layout.height,
+                           &dst_y, &dst_u, &dst_v)) {
+    return false;
+  }
 
   for (int32_t row = 0; row < layout.height; ++row) {
     const size_t src_off = static_cast<size_t>(layout.crop_top + row) * layout.stride +
@@ -861,21 +911,47 @@ bool ConvertPlanarToI420(const uint8_t *src, size_t src_size, const OutputLayout
   return true;
 }
 
-bool ConvertSemiPlanarToI420(const uint8_t *src, size_t src_size, const OutputLayout &layout,
-                             std::vector<uint8_t> *dst) {
+bool ConvertSemiPlanarToI420Buffer(const uint8_t *src, size_t src_size,
+                                   const OutputLayout &layout,
+                                   uint8_t *dst, size_t dst_size) {
   if (src == nullptr || dst == nullptr || layout.width <= 0 || layout.height <= 0) return false;
   const size_t y_plane_size = static_cast<size_t>(layout.stride) * layout.slice_height;
   if (src_size < y_plane_size) return false;
 
-  const size_t dst_size = awesomecam::I420FrameSize(layout.width, layout.height);
-  dst->resize(dst_size);
   const size_t cw = ChromaWidth(layout.width);
   const size_t ch = ChromaHeight(layout.height);
-  const size_t y_size = static_cast<size_t>(layout.width) * layout.height;
-  const size_t c_size = cw * ch;
-  uint8_t *dst_y = dst->data();
-  uint8_t *dst_u = dst_y + y_size;
-  uint8_t *dst_v = dst_u + c_size;
+  uint8_t *dst_y = nullptr;
+  uint8_t *dst_u = nullptr;
+  uint8_t *dst_v = nullptr;
+  if (!I420PlanesForBuffer(dst, dst_size, layout.width, layout.height,
+                           &dst_y, &dst_u, &dst_v)) {
+    return false;
+  }
+
+  const uint8_t *src_y = src + static_cast<size_t>(layout.crop_top) * layout.stride +
+                         layout.crop_left;
+  const uint8_t *src_uv = src + y_plane_size +
+                          static_cast<size_t>(layout.crop_top / 2) * layout.stride +
+                          layout.crop_left;
+  const size_t uv_size = src_size - y_plane_size;
+  const size_t uv_first_off =
+      static_cast<size_t>(layout.crop_top / 2) * layout.stride + layout.crop_left;
+  if (uv_first_off + (ch > 0 ? (ch - 1) * static_cast<size_t>(layout.stride) : 0) +
+          cw * 2 >
+      uv_size) {
+    return false;
+  }
+
+  const bool libyuv_ok = layout.chroma_swapped
+      ? awesomecam::LibYuvNV21ToI420(src_y, layout.stride, src_uv, layout.stride,
+                                     dst_y, layout.width, dst_u, static_cast<int>(cw),
+                                     dst_v, static_cast<int>(cw),
+                                     layout.width, layout.height)
+      : awesomecam::LibYuvNV12ToI420(src_y, layout.stride, src_uv, layout.stride,
+                                     dst_y, layout.width, dst_u, static_cast<int>(cw),
+                                     dst_v, static_cast<int>(cw),
+                                     layout.width, layout.height);
+  if (libyuv_ok) return true;
 
   for (int32_t row = 0; row < layout.height; ++row) {
     const size_t src_off = static_cast<size_t>(layout.crop_top + row) * layout.stride +
@@ -884,8 +960,6 @@ bool ConvertSemiPlanarToI420(const uint8_t *src, size_t src_size, const OutputLa
     memcpy(dst_y + static_cast<size_t>(row) * layout.width, src + src_off, layout.width);
   }
 
-  const uint8_t *src_uv = src + y_plane_size;
-  const size_t uv_size = src_size - y_plane_size;
   const int32_t chroma_crop_top = layout.crop_top / 2;
   const int32_t chroma_crop_left_bytes = layout.crop_left;
   for (size_t row = 0; row < ch; ++row) {
@@ -906,16 +980,24 @@ bool ConvertSemiPlanarToI420(const uint8_t *src, size_t src_size, const OutputLa
   return true;
 }
 
-bool ConvertOutputToI420(const uint8_t *src, size_t src_size, const OutputLayout &layout,
-                         std::vector<uint8_t> *dst) {
+bool ConvertOutputToI420Buffer(const uint8_t *src, size_t src_size,
+                               const OutputLayout &layout,
+                               uint8_t *dst, size_t dst_size) {
   switch (layout.kind) {
     case OutputLayoutKind::kPlanar:
-      return ConvertPlanarToI420(src, src_size, layout, dst);
+      return ConvertPlanarToI420Buffer(src, src_size, layout, dst, dst_size);
     case OutputLayoutKind::kSemiPlanar:
-      return ConvertSemiPlanarToI420(src, src_size, layout, dst);
+      return ConvertSemiPlanarToI420Buffer(src, src_size, layout, dst, dst_size);
     default:
       return false;
   }
+}
+
+bool ConvertOutputToI420(const uint8_t *src, size_t src_size, const OutputLayout &layout,
+                         std::vector<uint8_t> *dst) {
+  if (dst == nullptr) return false;
+  dst->resize(awesomecam::I420FrameSize(layout.width, layout.height));
+  return ConvertOutputToI420Buffer(src, src_size, layout, dst->data(), dst->size());
 }
 
 bool OpenExtractor(const std::string &path, AMediaExtractor **out_extractor, int *out_fd) {
@@ -1059,7 +1141,6 @@ DecodeOutcome DecodeOnce(const Options &opt, BinderClient *binder,
   TrackInfo track{};
   OutputLayout layout{};
   SourceRing ring;
-  std::vector<uint8_t> i420;
   bool ring_registered = false;
   bool stream_logged = false;
   bool codec_started = false;
@@ -1093,12 +1174,6 @@ DecodeOutcome DecodeOnce(const Options &opt, BinderClient *binder,
       return false;
     }
     ring_registered = true;
-    i420.resize(awesomecam::I420FrameSize(layout.width, layout.height));
-    if (i420.empty()) {
-      LOGE("MediaCodecPlayer: I420 allocation failed out=%dx%d", layout.width,
-           layout.height);
-      return false;
-    }
     if (!stream_logged) {
       LOGI("MediaCodecPlayer: stream=%zu mime=%s src=%dx%d out=%dx%d fps=%d fpsCap=%d durationUs=%lld input=%s",
            track.index, track.mime.c_str(), track.width, track.height, layout.width,
@@ -1271,7 +1346,15 @@ DecodeOutcome DecodeOnce(const Options &opt, BinderClient *binder,
       }
       const uint8_t *frame_ptr = output + info.offset;
       const size_t frame_size = static_cast<size_t>(info.size);
-      if (!ConvertOutputToI420(frame_ptr, frame_size, layout, &i420)) {
+      RingWriteSlot write{};
+      if (!BeginWriteFrame(&ring, pts_us, &write) || write.data == nullptr) {
+        LOGE("MediaCodecPlayer: begin source ring write failed");
+        AMediaCodec_releaseOutputBuffer(codec, static_cast<size_t>(output_index), false);
+        cleanup();
+        return DecodeOutcome::kFailed;
+      }
+      if (!ConvertOutputToI420Buffer(frame_ptr, frame_size, layout, write.data,
+                                     ring.slot_size)) {
         LOGE("MediaCodecPlayer: output conversion failed layout=%s color=%#x out=%dx%d stride=%d slice=%d size=%zu",
              LayoutKindName(layout.kind), layout.color_format, layout.width, layout.height,
              layout.stride, layout.slice_height, frame_size);
@@ -1280,18 +1363,14 @@ DecodeOutcome DecodeOnce(const Options &opt, BinderClient *binder,
         return DecodeOutcome::kFailed;
       }
       PaceFrame(pts_us, &clock_started, &base_wall_us, &base_pts_us);
-      if (!WriteFrame(&ring, i420.data(), i420.size(), pts_us)) {
-        LOGE("MediaCodecPlayer: WriteFrame failed");
-      }
+      FinishWriteFrame(&ring, write);
       last_published_pts_us = pts_us;
       decoded += 1;
       fps_frames += 1;
       if (ShouldLogCounter(decoded, 5, 120)) {
         LOGI("MediaCodecPlayer: wrote source frame #%llu gen=%llu slot=%u out=%dx%d pts=%lld",
              static_cast<unsigned long long>(decoded),
-             static_cast<unsigned long long>(ring.next_generation),
-             (ring.next_slot + awesomecam::kSharedMemoryRingSlotCount - 1) %
-                 awesomecam::kSharedMemoryRingSlotCount,
+             static_cast<unsigned long long>(write.generation), write.slot_index,
              layout.width, layout.height, static_cast<long long>(pts_us));
       }
       const int64_t now_us = MonotonicUs();
