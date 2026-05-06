@@ -371,14 +371,56 @@ class InjectorActivity : AppCompatActivity() {
 
         return buildList {
             add("mkdir -p ${shellQuote(RUNTIME_DIR)}")
-            add("cp ${shellQuote(helper.absolutePath)} ${shellQuote(helperDst)}")
-            add("cp ${shellQuote(player.absolutePath)} ${shellQuote(playerDst)}")
+            add("chcon u:object_r:system_data_file:s0 ${shellQuote(RUNTIME_DIR)} 2>/dev/null || true")
+            add(
+                """
+                stage_file() {
+                  SRC="${'$'}1"
+                  DST="${'$'}2"
+                  MODE="${'$'}3"
+                  LABEL="${'$'}4"
+                  TMP="${'$'}{DST}.tmp.${'$'}${'$'}"
+                  rm -f "${'$'}TMP"
+                  cp "${'$'}SRC" "${'$'}TMP" || return 1
+                  chmod "${'$'}MODE" "${'$'}TMP" || return 1
+                  chcon "${'$'}LABEL" "${'$'}TMP" 2>/dev/null || true
+                  mv -f "${'$'}TMP" "${'$'}DST" || return 1
+                  chmod "${'$'}MODE" "${'$'}DST" || return 1
+                  chcon "${'$'}LABEL" "${'$'}DST" 2>/dev/null || true
+                }
+                """.trimIndent(),
+            )
+            add("stage_file ${shellQuote(helper.absolutePath)} ${shellQuote(helperDst)} 0755 u:object_r:system_lib_file:s0")
+            add("stage_file ${shellQuote(player.absolutePath)} ${shellQuote(playerDst)} 0755 u:object_r:system_lib_file:s0")
             addAll(buildFfmpegRuntimeCommands(ffmpegLibs))
-            add("cp ${shellQuote(shadowHook.absolutePath)} ${shellQuote(shadowHookDst)}")
-            add("cp ${shellQuote(hook.absolutePath)} ${shellQuote(hookDst)}")
+            add("stage_file ${shellQuote(shadowHook.absolutePath)} ${shellQuote(shadowHookDst)} 0644 u:object_r:system_lib_file:s0")
+            add("stage_file ${shellQuote(hook.absolutePath)} ${shellQuote(hookDst)} 0644 u:object_r:system_lib_file:s0")
             add("chmod 0755 ${shellQuote(helperDst)} ${shellQuote(playerDst)} ${shellQuote(ffmpegExeDst)}")
             add("chmod 0644 ${shellQuote(shadowHookDst)} ${shellQuote(hookDst)}")
             add("chcon u:object_r:system_lib_file:s0 ${shellQuote(playerDst)} ${shellQuote(ffmpegExeDst)} ${shellQuote(shadowHookDst)} ${shellQuote(hookDst)}")
+            add(
+                """
+                pkill -TERM -f ${shellQuote(playerDst)} 2>/dev/null || true
+                OLDPID="$(pidof cameraserver 2>/dev/null | awk '{print ${'$'}1}')"
+                if [ -n "${'$'}OLDPID" ]; then
+                  echo "Restarting cameraserver to unload stale staged payload pid=${'$'}OLDPID"
+                  kill -9 "${'$'}OLDPID" 2>/dev/null || true
+                fi
+                NEWPID=""
+                for i in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20; do
+                  NEWPID="$(pidof cameraserver 2>/dev/null | awk '{print ${'$'}1}')"
+                  if [ -n "${'$'}NEWPID" ] && [ "${'$'}NEWPID" != "${'$'}OLDPID" ]; then
+                    break
+                  fi
+                  sleep 0.25
+                done
+                if [ -z "${'$'}NEWPID" ]; then
+                  echo "ERROR: cameraserver PID not observed after refresh"
+                  exit 1
+                fi
+                echo "cameraserver refreshed pid=${'$'}NEWPID"
+                """.trimIndent(),
+            )
             // Do not wrap with `sh -c`.
             //
             // KernelSU keeps the top-level `su` command in u:r:su:s0, but a nested
