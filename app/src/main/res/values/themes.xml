@@ -2,19 +2,18 @@
 <resources>
 
     <style name="Theme.AwesomeCAM" parent="Theme.MaterialComponents.DayNight.NoActionBar">
-        <item name="colorPrimary">@color/cyan_400</item>
-        <item name="colorPrimaryVariant">@color/cyan_700</item>
-        <item name="colorSecondary">@color/yellow_300</item>
-        <item name="colorSecondaryVariant">@color/cyan_500</item>
-        <item name="colorSurface">@color/paper</item>
-        <item name="android:colorBackground">@color/page_bg_start</item>
-        <item name="colorOnPrimary">@color/ink</item>
-        <item name="colorOnSecondary">@color/ink</item>
-        <item name="colorOnSurface">@color/ink</item>
-        <item name="colorOnBackground">@color/ink</item>
-        <item name="android:statusBarColor">@android:color/transparent</item>
-        <item name="android:navigationBarColor">@color/page_bg_end</item>
-        <item name="android:windowBackground">@drawable/bg_app_gradient</item>
+        <item name="colorPrimary">@color/miuix_brand</item>
+        <item name="colorPrimaryVariant">@color/miuix_brand</item>
+        <item name="colorSecondary">@color/miuix_accent_soft</item>
+        <item name="colorSurface">@color/miuix_surface</item>
+        <item name="android:colorBackground">@color/miuix_page_bg</item>
+        <item name="android:fontFamily">sans</item>
+        <item name="android:statusBarColor">@color/miuix_page_bg</item>
+        <item name="android:navigationBarColor">@color/miuix_page_bg</item>
+        <item name="android:windowBackground">@color/miuix_page_bg</item>
+        <item name="android:windowLightStatusBar">true</item>
+        <item name="android:windowLightNavigationBar">true</item>
+        <item name="android:windowNoTitle">true</item>
     </style>
 
 </resources>

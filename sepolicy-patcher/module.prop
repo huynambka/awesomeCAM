@@ -1,6 +1,6 @@
 id=sepolicy-patcher
-name=sepolicy patcher
-version=1.1.0
-versionCode=2
+name=awesomeCAM minimal sepolicy patcher
+version=2.2.0
+versionCode=7
 author=namnh
-description=Patch SELinux with Frida-style Android rules plus awesomeCAM cameraserver /data/camera allowances.
+description=Minimal SELinux policy for awesomeCAM native injector, cameraserver payload loading, Video2CameraService, and root FFmpeg source-ring player access.

@@ -1,34 +1,53 @@
-# Frida's Android SELinux patch creates these two types:
-type frida_file { file_type mlstrustedobject }
-type frida_memfd { file_type mlstrustedobject }
+# awesomeCAM minimal native-injector policy.
+# No Frida policy. Only cameraserver gets execmem for shadowhook trampolines.
 
-# Core Frida rules from frida-core/lib/selinux/patch.c.
-allow domain domain process execmem
-allow domain frida_file dir search
-allow domain frida_file file { open read getattr execute map }
-allow domain frida_memfd file { open read write getattr execute map }
-allow domain shell_data_file dir search
-allow domain zygote_exec file execute
-allow zygote zygote capability sys_ptrace
+type awesomecam_source_file { file_type mlstrustedobject }
+type awesomecam_config_file { file_type mlstrustedobject }
 
-# Frida uses "$self" here at runtime, meaning "the SELinux type of frida-server
-# itself". KernelSU static sepolicy.rule cannot express "$self", so use "self"
-# as the closest static approximation.
-allow domain self process sigchld
-allow domain self fd use
-allow domain self unix_stream_socket { connectto read write getattr getopt }
-allow domain self tcp_socket { read write getattr getopt }
+# Native injector runs as su, ptrace-attaches to cameraserver, and can restart
+# cameraserver during upgrade/test so dlopen reloads the new /data/camera/libhook.so.
+allow su cameraserver process { ptrace getattr sigchld signal sigkill }
+# KernelSU su also stages/labels/reads /data/camera files during install/test.
+allow su system_data_root_file dir search
+allow su system_data_file dir { search open read getattr write add_name remove_name }
+allow su system_data_file file { create open read write getattr setattr append map unlink rename ioctl lock }
+allow su system_lib_file file { create open read write getattr setattr append map unlink rename ioctl lock execute }
+allow su awesomecam_source_file file { open read getattr map ioctl lock }
+allow su awesomecam_config_file file { create open read write getattr setattr append map ioctl lock }
 
-# Frida adds these only if the target type exists on the device. Keep commented
-# unless you confirm the type exists on your ROM.
-# allow app_zygote zygote_exec file read
-# allow system_server apex_art_data_file file execute
-
-# awesomeCAM-specific rules for /data/camera payloads labeled system_lib_file.
+# cameraserver loads payloads from /data/camera.
+# /data/camera directory is system_data_file, *.so are system_lib_file.
 allow cameraserver system_data_root_file dir search
 allow cameraserver system_data_file dir { search open read getattr }
 allow cameraserver system_lib_file file { open read getattr map execute }
+# shadowhook allocates RX trampoline pages inside cameraserver.
+allow cameraserver cameraserver process execmem
 
-allow domain su unix_stream_socket { connectto read write getattr getopt }
-allow domain su fd use
-allow domain su process sigchld
+# cameraserver registers Video2CameraService.
+allow cameraserver default_android_service service_manager add
+
+# awesomeCAM app connects to Video2CameraService and transfers an ASharedMemory FD.
+allow untrusted_app default_android_service service_manager find
+allow cameraserver untrusted_app fd use
+
+# App-native MP4 decode path: app reads /data/camera/input.mp4; legacy cameraserver/mediaextractor read rules are retained harmlessly.
+allow cameraserver awesomecam_source_file file { open read getattr map ioctl lock }
+# cameraserver scanner saves discovered offsets here.
+allow cameraserver awesomecam_config_file file { create open read write getattr setattr append map }
+allow cameraserver mediaextractor_service service_manager find
+allow cameraserver mediaextractor binder { call transfer }
+allow mediaextractor cameraserver binder transfer
+allow mediaextractor cameraserver fd use
+allow mediaextractor system_data_root_file dir search
+allow mediaextractor system_data_file dir { search open read getattr }
+allow mediaextractor awesomecam_source_file file { open read getattr map ioctl lock watch watch_reads }
+
+# App only checks/reads /data/camera/input.mp4.
+allow untrusted_app system_data_root_file dir search
+allow untrusted_app system_data_file dir { search open read getattr }
+allow untrusted_app awesomecam_source_file file { open read getattr map ioctl lock }
+
+# Root FFmpeg player process talks to the cameraserver service and passes one source-ring FD.
+allow su default_android_service service_manager find
+allow su cameraserver binder { call transfer }
+allow cameraserver su fd use

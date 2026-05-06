@@ -1,29 +1,43 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <color name="cyan_300">#8FF3FF</color>
-    <color name="cyan_400">#46E6FF</color>
-    <color name="cyan_500">#00CFEF</color>
-    <color name="cyan_700">#00A6C2</color>
-    <color name="cyan_900">#00343D</color>
+    <!-- Minimalism 2.0: warm canvas, typographic hierarchy, one quiet utility accent. -->
+    <color name="miuix_page_bg">#FAFAF6</color>
+    <color name="miuix_surface">#FFFFFFFF</color>
+    <color name="miuix_surface_alt">#F1F0EA</color>
+    <color name="miuix_surface_deep">#E9E7DD</color>
+    <color name="miuix_brand">#101010</color>
+    <color name="miuix_accent_soft">#DDF7A1</color>
+    <color name="miuix_accent_wash">#55DDF7A1</color>
+    <color name="miuix_badge_bg">#EEF8D9</color>
+    <color name="miuix_stroke">#E5E2D7</color>
+    <color name="miuix_stroke_strong">#D3D0C2</color>
+    <color name="miuix_text_primary">#111111</color>
+    <color name="miuix_text_secondary">#747266</color>
+    <color name="miuix_text_tertiary">#9A978A</color>
+    <color name="miuix_log_bg">#111111</color>
+    <color name="miuix_log_text">#F3F1E8</color>
 
-    <color name="yellow_300">#FFE45E</color>
-
-    <color name="page_bg_start">#F2FEFF</color>
-    <color name="page_bg_end">#DDF8FF</color>
-    <color name="paper">#FFFFFF</color>
-    <color name="ink">#101010</color>
-
-    <color name="terminal_bg">#121212</color>
-    <color name="terminal_text">#84F8FF</color>
-    <color name="text_dark_secondary">#36515C</color>
-
-    <color name="text_primary">#101010</color>
-    <color name="text_secondary">#36515C</color>
-    <color name="bg_surface">#FFFFFF</color>
-    <color name="bg_surface_alt">#FFFFFF</color>
-    <color name="bg_terminal">#121212</color>
-    <color name="bg_start">#F2FEFF</color>
-    <color name="bg_end">#DDF8FF</color>
-    <color name="stroke_soft">#101010</color>
-    <color name="stroke_bright">#101010</color>
+    <!-- legacy aliases kept so old drawables still compile -->
+    <color name="cyan_300">@color/miuix_accent_soft</color>
+    <color name="cyan_400">@color/miuix_brand</color>
+    <color name="cyan_500">@color/miuix_brand</color>
+    <color name="cyan_700">@color/miuix_brand</color>
+    <color name="cyan_900">@color/miuix_text_primary</color>
+    <color name="yellow_300">#F3E6B2</color>
+    <color name="page_bg_start">@color/miuix_page_bg</color>
+    <color name="page_bg_end">@color/miuix_page_bg</color>
+    <color name="paper">@color/miuix_surface</color>
+    <color name="ink">@color/miuix_text_primary</color>
+    <color name="terminal_bg">@color/miuix_log_bg</color>
+    <color name="terminal_text">@color/miuix_log_text</color>
+    <color name="text_dark_secondary">@color/miuix_text_secondary</color>
+    <color name="text_primary">@color/miuix_text_primary</color>
+    <color name="text_secondary">@color/miuix_text_secondary</color>
+    <color name="bg_surface">@color/miuix_surface</color>
+    <color name="bg_surface_alt">@color/miuix_surface_alt</color>
+    <color name="bg_terminal">@color/miuix_log_bg</color>
+    <color name="bg_start">@color/miuix_page_bg</color>
+    <color name="bg_end">@color/miuix_page_bg</color>
+    <color name="stroke_soft">@color/miuix_stroke</color>
+    <color name="stroke_bright">@color/miuix_stroke_strong</color>
 </resources>

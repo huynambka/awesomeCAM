@@ -6,6 +6,9 @@
         android:supportsRtl="true"
         android:theme="@style/Theme.AwesomeCAM">
         <activity
+            android:name=".LogsActivity"
+            android:exported="false" />
+        <activity
             android:name=".InjectorActivity"
             android:exported="true">
             <intent-filter>

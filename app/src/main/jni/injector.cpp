@@ -1,20 +1,23 @@
-#include "frida-core.h"
+#include "injector.h"
+#include "elf_parser.h"
+#include "proc_maps.h"
+#include "ptrace_utils.h"
+#include "remote_call.h"
 
 #include <android/log.h>
-#include <dirent.h>
-#include <errno.h>
-#include <stdarg.h>
-#include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
+#include <dlfcn.h>
+#include <sys/mman.h>
 #include <unistd.h>
+
+#include <cstdio>
+#include <cstring>
+#include <optional>
+#include <string>
+#include <vector>
 
 #define LOG_TAG "awesomeCAM"
 #define ALOGI(...) __android_log_print(ANDROID_LOG_INFO, LOG_TAG, __VA_ARGS__)
 #define ALOGE(...) __android_log_print(ANDROID_LOG_ERROR, LOG_TAG, __VA_ARGS__)
-
-#define AGENT_BASENAME "agent.js"
-#define AGENT_PLACEHOLDER "__PAYLOAD_PATH__"
 
 #define info_log(fmt, ...) do { \
     ALOGI(fmt, ##__VA_ARGS__); \
@@ -28,547 +31,301 @@
     fflush(stderr); \
 } while(0)
 
-typedef struct {
-    GMainLoop *loop;
-    gboolean completed;
-    gboolean success;
-    gboolean timeout_fired;
-    gchar *failure_message;
-} InjectContext;
+namespace {
 
-static int find_pid_by_name(const char *name) {
-    DIR *dir = opendir("/proc");
-    if (!dir) {
-        err_log("opendir /proc failed: %s", strerror(errno));
+const char* kLinkerPatterns[] = {
+    "/linker64",
+    "/apex/com.android.runtime/bin/linker64",
+    "/system/bin/linker64",
+};
+
+const char* kLibcPatterns[] = {
+    "/libc.so",
+};
+
+int find_pid_by_name(const char* name) {
+    if (name == nullptr || name[0] == '\0') {
         return -1;
     }
 
-    struct dirent *entry;
-    while ((entry = readdir(dir)) != NULL) {
-        if (entry->d_type != DT_DIR) continue;
+    char cmd[128];
+    snprintf(cmd, sizeof(cmd), "pidof %s", name);
+    FILE* fp = popen(cmd, "r");
+    if (fp == nullptr) {
+        return -1;
+    }
 
-        int pid = atoi(entry->d_name);
-        if (pid <= 0) continue;
+    char buf[128] = {0};
+    const size_t n = fread(buf, 1, sizeof(buf) - 1, fp);
+    pclose(fp);
+    if (n == 0) {
+        return -1;
+    }
 
-        char path[256];
-        snprintf(path, sizeof(path), "/proc/%d/cmdline", pid);
+    return atoi(buf);
+}
 
-        FILE *f = fopen(path, "r");
-        if (!f) continue;
+std::string basename_copy(const std::string& path) {
+    const size_t slash = path.find_last_of('/');
+    if (slash == std::string::npos) return path;
+    return path.substr(slash + 1);
+}
 
-        char cmdline[256] = {0};
-        size_t size = fread(cmdline, 1, sizeof(cmdline) - 1, f);
-        fclose(f);
-        if (size == 0) continue;
-
-        const char *base = strrchr(cmdline, '/');
-        const char *process_name = (base != NULL && base[1] != '\0') ? (base + 1) : cmdline;
-
-        if (strcmp(cmdline, name) == 0 || strcmp(process_name, name) == 0) {
-            closedir(dir);
-            return pid;
+const ModuleInfo* find_loaded_module_for_path(const std::vector<ModuleInfo>& maps,
+                                              const std::string& path) {
+    for (const auto& map : maps) {
+        if (map.path == path) {
+            return &map;
         }
     }
 
-    closedir(dir);
-    return -1;
-}
-
-static char *read_text_file(const char *path) {
-    FILE *file = fopen(path, "rb");
-    if (!file) {
-        err_log("open %s failed: %s", path, strerror(errno));
-        return NULL;
-    }
-
-    if (fseek(file, 0, SEEK_END) != 0) {
-        err_log("fseek %s failed: %s", path, strerror(errno));
-        fclose(file);
-        return NULL;
-    }
-
-    long size = ftell(file);
-    if (size < 0) {
-        err_log("ftell %s failed: %s", path, strerror(errno));
-        fclose(file);
-        return NULL;
-    }
-    rewind(file);
-
-    char *buffer = (char *)malloc((size_t)size + 1);
-    if (!buffer) {
-        err_log("malloc %ld bytes failed", size + 1);
-        fclose(file);
-        return NULL;
-    }
-
-    size_t read_size = fread(buffer, 1, (size_t)size, file);
-    fclose(file);
-    if (read_size != (size_t)size) {
-        err_log("short read from %s: got %zu expected %ld", path, read_size, size);
-        free(buffer);
-        return NULL;
-    }
-
-    buffer[size] = '\0';
-    return buffer;
-}
-
-static char *replace_token(const char *source, const char *token, const char *replacement) {
-    const char *match = strstr(source, token);
-    if (!match) {
-        err_log("agent template missing token %s", token);
-        return NULL;
-    }
-
-    size_t prefix_len = (size_t)(match - source);
-    size_t token_len = strlen(token);
-    size_t replacement_len = strlen(replacement);
-    size_t suffix_len = strlen(match + token_len);
-    size_t total_len = prefix_len + replacement_len + suffix_len;
-
-    char *result = (char *)malloc(total_len + 1);
-    if (!result) {
-        err_log("malloc %zu bytes failed", total_len + 1);
-        return NULL;
-    }
-
-    memcpy(result, source, prefix_len);
-    memcpy(result + prefix_len, replacement, replacement_len);
-    memcpy(result + prefix_len + replacement_len, match + token_len, suffix_len);
-    result[total_len] = '\0';
-    return result;
-}
-
-static char *escape_as_js_string_literal(const char *value) {
-    size_t extra = 2;
-    for (const unsigned char *cursor = (const unsigned char *)value; *cursor != '\0'; ++cursor) {
-        switch (*cursor) {
-            case '\\':
-            case '"':
-            case '\n':
-            case '\r':
-            case '\t':
-                extra += 2;
-                break;
-            default:
-                extra += 1;
-                break;
+    const std::string base = basename_copy(path);
+    for (const auto& map : maps) {
+        if (!map.path.empty() && basename_copy(map.path) == base) {
+            return &map;
         }
     }
-
-    char *out = (char *)malloc(extra + 1);
-    if (!out) {
-        err_log("malloc %zu bytes failed", extra + 1);
-        return NULL;
-    }
-
-    char *dst = out;
-    *dst++ = '"';
-    for (const unsigned char *cursor = (const unsigned char *)value; *cursor != '\0'; ++cursor) {
-        switch (*cursor) {
-            case '\\':
-                *dst++ = '\\';
-                *dst++ = '\\';
-                break;
-            case '"':
-                *dst++ = '\\';
-                *dst++ = '"';
-                break;
-            case '\n':
-                *dst++ = '\\';
-                *dst++ = 'n';
-                break;
-            case '\r':
-                *dst++ = '\\';
-                *dst++ = 'r';
-                break;
-            case '\t':
-                *dst++ = '\\';
-                *dst++ = 't';
-                break;
-            default:
-                *dst++ = (char)*cursor;
-                break;
-        }
-    }
-    *dst++ = '"';
-    *dst = '\0';
-    return out;
+    return nullptr;
 }
 
-static char *make_agent_path_for_payload(const char *payload_path) {
-    const char *last_slash = strrchr(payload_path, '/');
-    if (!last_slash) {
-        return strdup(AGENT_BASENAME);
+bool maps_contains_path(int pid, const std::string& path) {
+    if (pid <= 0 || path.empty()) {
+        return false;
     }
-
-    size_t dir_len = (size_t)(last_slash - payload_path);
-    size_t total = dir_len + 1 + strlen(AGENT_BASENAME);
-    char *path = (char *)malloc(total + 1);
-    if (!path) {
-        err_log("malloc %zu bytes failed", total + 1);
-        return NULL;
-    }
-    memcpy(path, payload_path, dir_len);
-    path[dir_len] = '/';
-    strcpy(path + dir_len + 1, AGENT_BASENAME);
-    return path;
+    auto maps = parse_proc_maps(pid);
+    return find_loaded_module_for_path(maps, path) != nullptr;
 }
 
-static char *build_agent_source(const char *agent_path, const char *payload_path) {
-    char *template_source = read_text_file(agent_path);
-    if (!template_source) {
-        return NULL;
-    }
-
-    char *escaped_payload = escape_as_js_string_literal(payload_path);
-    if (!escaped_payload) {
-        free(template_source);
-        return NULL;
-    }
-
-    char *result = replace_token(template_source, AGENT_PLACEHOLDER, escaped_payload);
-    free(escaped_payload);
-    free(template_source);
-    return result;
+bool process_alive(int pid) {
+    if (pid <= 0) return false;
+    char path[64];
+    snprintf(path, sizeof(path), "/proc/%d/maps", pid);
+    return access(path, F_OK) == 0;
 }
 
-static void complete_result(InjectContext *ctx, gboolean success, const char *fmt, ...) {
-    if (ctx->completed) {
-        return;
+}  // namespace
+
+int do_inject(const char* target_name, const char* loader_path, const char* export_symbol) {
+    if (target_name == nullptr || target_name[0] == '\0') {
+        err_log("target process name is empty");
+        return 1;
+    }
+    if (loader_path == nullptr || loader_path[0] != '/') {
+        err_log("loader path must be absolute (got %s)", loader_path != nullptr ? loader_path : "(null)");
+        return 1;
     }
 
-    ctx->completed = TRUE;
-    ctx->success = success;
+    info_log("Start native inject [%s -> %s%s%s]",
+             target_name,
+             loader_path,
+             (export_symbol != nullptr && export_symbol[0] != '\0') ? " ; call " : "",
+             (export_symbol != nullptr && export_symbol[0] != '\0') ? export_symbol : "");
 
-    if (!success && fmt != NULL) {
-        va_list ap;
-        va_start(ap, fmt);
-        ctx->failure_message = g_strdup_vprintf(fmt, ap);
-        va_end(ap);
-    }
-
-    if (ctx->loop != NULL && g_main_loop_is_running(ctx->loop)) {
-        g_main_loop_quit(ctx->loop);
-    }
-}
-
-static void on_message(FridaScript *script,
-                       const gchar *message,
-                       GBytes *data,
-                       gpointer user_data) {
-    (void)script;
-    (void)data;
-
-    InjectContext *ctx = (InjectContext *)user_data;
-    JsonParser *parser = json_parser_new();
-    GError *error = NULL;
-    if (!json_parser_load_from_data(parser, message, -1, &error)) {
-        complete_result(ctx, FALSE, "Failed to parse script message: %s", error->message);
-        g_error_free(error);
-        g_object_unref(parser);
-        return;
-    }
-
-    JsonObject *root = json_node_get_object(json_parser_get_root(parser));
-    const gchar *type = json_object_get_string_member_with_default(root, "type", "");
-    if (strcmp(type, "send") == 0) {
-        JsonObject *payload = json_object_get_object_member(root, "payload");
-        if (payload == NULL) {
-            info_log("script send without object payload: %s", message);
-            g_object_unref(parser);
-            return;
-        }
-
-        const gchar *payload_type = json_object_get_string_member_with_default(payload, "type", "");
-        if (strcmp(payload_type, "loaded") == 0) {
-            const gchar *path = json_object_get_string_member_with_default(payload, "path", "(unknown)");
-            const gchar *base = json_object_get_string_member_with_default(payload, "base", "(unknown)");
-            info_log("Payload loaded path=%s base=%s", path, base);
-            complete_result(ctx, TRUE, NULL);
-        } else if (strcmp(payload_type, "error") == 0) {
-            const gchar *msg = json_object_get_string_member_with_default(payload, "message", "unknown error");
-            const gchar *stack = json_object_get_string_member_with_default(payload, "stack", "");
-            complete_result(ctx, FALSE, "Payload load failed: %s%s%s",
-                            msg,
-                            stack[0] != '\0' ? " | " : "",
-                            stack);
-        } else {
-            info_log("script send: %s", message);
-        }
-    } else if (strcmp(type, "log") == 0) {
-        info_log("script log: %s",
-                 json_object_get_string_member_with_default(root, "payload", ""));
-    } else if (strcmp(type, "error") == 0) {
-        const gchar *description = json_object_get_string_member_with_default(root, "description", "script error");
-        const gchar *stack = json_object_get_string_member_with_default(root, "stack", "");
-        complete_result(ctx, FALSE, "Script error: %s%s%s",
-                        description,
-                        stack[0] != '\0' ? " | " : "",
-                        stack);
-    } else {
-        info_log("script message: %s", message);
-    }
-
-    g_object_unref(parser);
-}
-
-static void on_detached(FridaSession *session,
-                        FridaSessionDetachReason reason,
-                        FridaCrash *crash,
-                        gpointer user_data) {
-    (void)session;
-    (void)crash;
-
-    InjectContext *ctx = (InjectContext *)user_data;
-    gchar *reason_str = g_enum_to_string(FRIDA_TYPE_SESSION_DETACH_REASON, reason);
-    info_log("Session detached reason=%s", reason_str != NULL ? reason_str : "(unknown)");
-    if (!ctx->completed) {
-        complete_result(ctx, FALSE, "Session detached before payload load");
-    }
-    g_free(reason_str);
-}
-
-static gboolean on_timeout(gpointer user_data) {
-    InjectContext *ctx = (InjectContext *)user_data;
-    ctx->timeout_fired = TRUE;
-    complete_result(ctx, FALSE, "Timed out waiting for payload load result");
-    return G_SOURCE_REMOVE;
-}
-
-static const char *device_type_to_string(FridaDeviceType type) {
-    switch (type) {
-        case FRIDA_DEVICE_TYPE_LOCAL:
-            return "local";
-        case FRIDA_DEVICE_TYPE_REMOTE:
-            return "remote";
-        case FRIDA_DEVICE_TYPE_USB:
-            return "usb";
-        default:
-            return "unknown";
-    }
-}
-
-static void find_candidate_devices(FridaDeviceManager *manager,
-                                   FridaDevice **out_local_device,
-                                   FridaDevice **out_remote_device) {
-    *out_local_device = NULL;
-    *out_remote_device = NULL;
-
-    GError *error = NULL;
-    FridaDeviceList *devices = frida_device_manager_enumerate_devices_sync(manager, NULL, &error);
-    if (error != NULL) {
-        err_log("enumerate devices failed: %s", error->message);
-        g_error_free(error);
-        return;
-    }
-
-    gint num_devices = frida_device_list_size(devices);
-    for (gint i = 0; i != num_devices; i++) {
-        FridaDevice *device = frida_device_list_get(devices, i);
-        FridaDeviceType type = frida_device_get_dtype(device);
-        info_log("Found device: name=%s id=%s type=%s",
-                 frida_device_get_name(device),
-                 frida_device_get_id(device),
-                 device_type_to_string(type));
-        if (type == FRIDA_DEVICE_TYPE_REMOTE && *out_remote_device == NULL) {
-            *out_remote_device = (FridaDevice *)g_object_ref(device);
-        } else if (type == FRIDA_DEVICE_TYPE_LOCAL && *out_local_device == NULL) {
-            *out_local_device = (FridaDevice *)g_object_ref(device);
-        }
-        g_object_unref(device);
-    }
-
-    frida_unref(devices);
-}
-
-static FridaSession *attach_with_device(FridaDevice *device,
-                                        guint pid,
-                                        const char *label,
-                                        gchar **out_error_message) {
-    GError *error = NULL;
-    FridaSession *session = frida_device_attach_sync(device, pid, NULL, NULL, &error);
-    if (error == NULL) {
-        return session;
-    }
-
-    if (out_error_message != NULL) {
-        if (*out_error_message == NULL) {
-            *out_error_message = g_strdup_printf("%s: %s", label, error->message);
-        } else {
-            gchar *combined = g_strdup_printf("%s | %s: %s", *out_error_message, label, error->message);
-            g_free(*out_error_message);
-            *out_error_message = combined;
-        }
-    }
-    err_log("%s attach failed: %s", label, error->message);
-    g_error_free(error);
-    return NULL;
-}
-
-int do_inject(const char *target_name, const char *loader_path) {
-    int exit_code = 1;
-    pid_t pid = -1;
-    char *agent_path = NULL;
-    char *script_source = NULL;
-    FridaDeviceManager *manager = NULL;
-    FridaDevice *local_device = NULL;
-    FridaDevice *remote_device = NULL;
-    FridaSession *session = NULL;
-    FridaScript *script = NULL;
-    FridaScriptOptions *options = NULL;
-    GError *error = NULL;
-    guint timeout_source = 0;
-    gboolean frida_initialized = FALSE;
-    gchar *attach_error = NULL;
-    InjectContext ctx = {};
-
-    info_log("Start Frida inject [%s -> %s]", target_name, loader_path);
-
-    pid = find_pid_by_name(target_name);
+    const int pid = find_pid_by_name(target_name);
     if (pid <= 0) {
         err_log("target process %s not found", target_name);
-        goto cleanup;
+        return 1;
     }
     info_log("Resolved %s pid=%d", target_name, pid);
 
-    agent_path = make_agent_path_for_payload(loader_path);
-    if (agent_path == NULL) {
-        goto cleanup;
-    }
-    info_log("Agent path = %s", agent_path);
-
-    script_source = build_agent_source(agent_path, loader_path);
-    if (script_source == NULL) {
-        goto cleanup;
+    auto maps = parse_proc_maps(pid);
+    if (maps.empty()) {
+        err_log("failed to parse /proc/%d/maps", pid);
+        return 1;
     }
 
-    frida_init();
-    frida_initialized = TRUE;
-    ctx.loop = g_main_loop_new(NULL, FALSE);
+    const ModuleInfo* remote_libc = nullptr;
+    for (const auto* pat : kLibcPatterns) {
+        remote_libc = find_module(maps, pat);
+        if (remote_libc != nullptr) break;
+    }
+    if (remote_libc == nullptr) {
+        err_log("remote libc not found in maps");
+        return 1;
+    }
+    info_log("Remote libc: %s @ 0x%llx", remote_libc->path.c_str(),
+             static_cast<unsigned long long>(remote_libc->base));
 
-    manager = frida_device_manager_new();
-    find_candidate_devices(manager, &local_device, &remote_device);
-    if (local_device == NULL && remote_device == NULL) {
-        err_log("usable Frida device not found");
-        goto cleanup;
+    const ModuleInfo* remote_linker = nullptr;
+    for (const auto* pat : kLinkerPatterns) {
+        remote_linker = find_module(maps, pat);
+        if (remote_linker != nullptr) break;
     }
+    if (remote_linker == nullptr) {
+        err_log("remote linker64 not found in maps");
+        return 1;
+    }
+    info_log("Remote linker: %s @ 0x%llx", remote_linker->path.c_str(),
+             static_cast<unsigned long long>(remote_linker->base));
 
-    if (local_device != NULL) {
-        info_log("Attaching with Frida local backend");
-        session = attach_with_device(local_device, (guint)pid, "local backend", &attach_error);
-    }
-    if (session == NULL && remote_device != NULL) {
-        info_log("Attaching with Frida remote backend");
-        session = attach_with_device(remote_device, (guint)pid, "remote backend", &attach_error);
-    }
-    if (session == NULL) {
-        if (attach_error != NULL) {
-            err_log("attach failed: %s", attach_error);
+    const ModuleInfo* target_rx = find_rx_module(maps, target_name);
+    if (target_rx == nullptr) {
+        for (const auto& map : maps) {
+            if (map.is_rx && !map.path.empty()) {
+                target_rx = &map;
+                break;
+            }
         }
-        goto cleanup;
+    }
+    if (target_rx == nullptr) {
+        err_log("no executable mapping found for caller_addr");
+        return 1;
+    }
+    const uint64_t caller_addr = target_rx->base;
+    info_log("caller_addr: 0x%llx (%s)", static_cast<unsigned long long>(caller_addr),
+             target_rx->path.c_str());
+
+    const auto local_libc_path = resolve_local_libc_path();
+    if (!local_libc_path) {
+        err_log("local libc not found on device");
+        return 1;
+    }
+    const auto local_linker_path = resolve_local_linker_path();
+    if (!local_linker_path) {
+        err_log("local linker64 not found on device");
+        return 1;
     }
 
-    g_signal_connect(session, "detached", G_CALLBACK(on_detached), &ctx);
-    if (frida_session_is_detached(session)) {
-        err_log("session detached immediately");
-        goto cleanup;
-    }
-    info_log("Attached");
-
-    options = frida_script_options_new();
-    frida_script_options_set_name(options, "vcam-loader");
-    frida_script_options_set_runtime(options, FRIDA_SCRIPT_RUNTIME_QJS);
-
-    script = frida_session_create_script_sync(session, script_source, options, NULL, &error);
-    if (error != NULL) {
-        err_log("create_script failed: %s", error->message);
-        g_error_free(error);
-        error = NULL;
-        goto cleanup;
-    }
-    info_log("Script created");
-
-    g_signal_connect(script, "message", G_CALLBACK(on_message), &ctx);
-
-    frida_script_load_sync(script, NULL, &error);
-    if (error != NULL) {
-        err_log("script load failed: %s", error->message);
-        g_error_free(error);
-        error = NULL;
-        goto cleanup;
-    }
-    info_log("Script loaded");
-
-    if (!ctx.completed) {
-        timeout_source = g_timeout_add_seconds(10, on_timeout, &ctx);
-        g_main_loop_run(ctx.loop);
+    const auto mmap_offset = find_elf_symbol_value(*local_libc_path, "mmap");
+    if (!mmap_offset) {
+        err_log("symbol 'mmap' not found in local libc");
+        return 1;
     }
 
-    if (!ctx.completed) {
-        complete_result(&ctx, FALSE, "Injection ended without result");
-    }
-
-    if (!ctx.success) {
-        err_log("%s", ctx.failure_message != NULL ? ctx.failure_message : "Injection failed");
-        goto cleanup;
-    }
-
-    info_log("Frida payload load confirmed");
-    exit_code = 0;
-
-cleanup:
-    if (timeout_source != 0 && !ctx.timeout_fired) {
-        g_source_remove(timeout_source);
-    }
-
-    if (script != NULL) {
-        frida_script_unload_sync(script, NULL, NULL);
-        frida_unref(script);
-    }
-
-    if (session != NULL) {
-        if (!frida_session_is_detached(session)) {
-            frida_session_detach_sync(session, NULL, NULL);
+    const char* dlopen_names[] = {
+        "__loader_dlopen",
+        "__dl__Z8__dlopenPKciPKv",
+        "dlopen",
+    };
+    std::optional<uint64_t> dlopen_offset;
+    const char* dlopen_name_used = nullptr;
+    for (const auto* name : dlopen_names) {
+        dlopen_offset = find_elf_symbol_value(*local_linker_path, name);
+        if (dlopen_offset) {
+            dlopen_name_used = name;
+            break;
         }
-        frida_unref(session);
+    }
+    if (!dlopen_offset) {
+        err_log("dlopen symbol not found in local linker");
+        return 1;
     }
 
-    if (local_device != NULL) {
-        frida_unref(local_device);
+    const uint64_t remote_mmap = remote_libc->base + *mmap_offset;
+    const uint64_t remote_dlopen = remote_linker->base + *dlopen_offset;
+    info_log("mmap offset: 0x%llx", static_cast<unsigned long long>(*mmap_offset));
+    info_log("dlopen (%s) offset: 0x%llx", dlopen_name_used,
+             static_cast<unsigned long long>(*dlopen_offset));
+    info_log("remote mmap: 0x%llx", static_cast<unsigned long long>(remote_mmap));
+    info_log("remote dlopen: 0x%llx", static_cast<unsigned long long>(remote_dlopen));
+
+    const auto tids = get_thread_tids(pid);
+    if (tids.empty()) {
+        err_log("no threads found for pid %d", pid);
+        return 1;
     }
 
-    if (remote_device != NULL) {
-        frida_unref(remote_device);
+    const int tid = tids[0];
+    info_log("Attaching to tid %d", tid);
+
+    std::string err;
+    PtraceSession session(tid);
+    if (!session.attach(&err)) {
+        err_log("ptrace attach failed: %s", err.c_str());
+        return 1;
+    }
+    info_log("Attached (seize=%d)", session.used_seize() ? 1 : 0);
+
+    const size_t path_size = strlen(loader_path) + 1;
+    auto mmap_result = remote_call6(session, remote_mmap,
+                                    0,
+                                    path_size,
+                                    PROT_READ | PROT_WRITE,
+                                    MAP_PRIVATE | MAP_ANONYMOUS,
+                                    static_cast<uint64_t>(-1),
+                                    0,
+                                    &err);
+    if (!mmap_result.success || mmap_result.return_value == 0 ||
+        mmap_result.return_value == reinterpret_cast<uint64_t>(MAP_FAILED)) {
+        err_log("remote mmap failed: %s", err.c_str());
+        return 1;
+    }
+    const uint64_t remote_path_addr = mmap_result.return_value;
+    info_log("remote mmap returned 0x%llx", static_cast<unsigned long long>(remote_path_addr));
+
+    if (!session.write_memory(remote_path_addr, loader_path, path_size, &err)) {
+        err_log("write_memory failed: %s", err.c_str());
+        return 1;
+    }
+    info_log("Wrote path to 0x%llx", static_cast<unsigned long long>(remote_path_addr));
+
+    const int dlopen_flags = RTLD_NOW | RTLD_GLOBAL;
+    auto dlopen_result = remote_call3(session, remote_dlopen,
+                                      remote_path_addr,
+                                      static_cast<uint64_t>(dlopen_flags),
+                                      caller_addr,
+                                      &err);
+    if (!dlopen_result.success) {
+        err_log("remote dlopen call failed: %s", err.c_str());
+        return 1;
+    }
+    if (dlopen_result.return_value == 0) {
+        err_log("dlopen returned NULL for %s", loader_path);
+        return 1;
+    }
+    info_log("dlopen returned handle 0x%llx", static_cast<unsigned long long>(dlopen_result.return_value));
+
+    maps = parse_proc_maps(pid);
+    const ModuleInfo* loaded = find_loaded_module_for_path(maps, loader_path);
+    if (loaded == nullptr) {
+        err_log("payload %s not present in maps after dlopen", loader_path);
+        return 1;
+    }
+    info_log("Payload mapped at 0x%llx (%s)", static_cast<unsigned long long>(loaded->base), loaded->path.c_str());
+
+    if (export_symbol != nullptr && export_symbol[0] != '\0') {
+        const auto symbol_value = find_elf_symbol_value(loader_path, export_symbol);
+        if (!symbol_value) {
+            err_log("export %s not found in %s", export_symbol, loader_path);
+            return 1;
+        }
+        const auto min_vaddr = find_elf_min_load_vaddr(loader_path);
+        const uint64_t load_bias = min_vaddr.value_or(0);
+        const uint64_t remote_symbol = loaded->base + *symbol_value - load_bias;
+        info_log("Calling export %s at 0x%llx (symbol=0x%llx load_bias=0x%llx)",
+                 export_symbol,
+                 static_cast<unsigned long long>(remote_symbol),
+                 static_cast<unsigned long long>(*symbol_value),
+                 static_cast<unsigned long long>(load_bias));
+        auto call_result = remote_call0(session, remote_symbol, &err);
+        if (!call_result.success) {
+            err_log("remote call %s failed: %s", export_symbol, err.c_str());
+            return 1;
+        }
+        info_log("Export %s returned 0x%llx", export_symbol,
+                 static_cast<unsigned long long>(call_result.return_value));
     }
 
-    if (manager != NULL) {
-        frida_device_manager_close_sync(manager, NULL, NULL);
-        frida_unref(manager);
+    if (!session.detach(&err)) {
+        err_log("ptrace detach failed: %s", err.c_str());
+        return 1;
+    }
+    info_log("Detached from tid %d", tid);
+
+    usleep(250 * 1000);
+
+    if (!process_alive(pid)) {
+        const int new_pid = find_pid_by_name(target_name);
+        err_log("target pid %d disappeared after inject; current %s pid=%d", pid, target_name, new_pid);
+        return 1;
     }
 
-    if (ctx.loop != NULL) {
-        g_main_loop_unref(ctx.loop);
+    if (!maps_contains_path(pid, loader_path)) {
+        err_log("payload %s missing from /proc/%d/maps after detach", loader_path, pid);
+        return 1;
     }
 
-    if (options != NULL) {
-        g_object_unref(options);
-    }
-
-    g_free(ctx.failure_message);
-    g_free(attach_error);
-    free(script_source);
-    free(agent_path);
-
-    if (frida_initialized) {
-        frida_shutdown();
-        frida_deinit();
-    }
-
-    if (exit_code == 0) {
-        info_log("Finish Inject");
-    }
-
-    return exit_code;
+    info_log("Verified payload still mapped after detach: %s", loader_path);
+    info_log("Finish Inject");
+    return 0;
 }
