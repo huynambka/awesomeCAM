@@ -1,7 +1,6 @@
 #include "ready_frame_cache.h"
 
 #include <android/log.h>
-#include <dlfcn.h>
 #include <string.h>
 #include <time.h>
 #include <pthread.h>
@@ -12,12 +11,6 @@
 #include <memory>
 #include <mutex>
 #include <vector>
-
-struct SwsContext;
-using FnSwsGetContext = SwsContext *(*)(int, int, int, int, int, int, int, void *, void *, const double *);
-using FnSwsScale = int (*)(SwsContext *, const uint8_t *const[], const int[], int, int, uint8_t *const[], const int[]);
-using FnSwsFreeContext = void (*)(SwsContext *);
-
 
 #include "video2camera_ipc.h"
 #include "video2camera_service.h"
@@ -32,8 +25,6 @@ namespace awesomecam {
 namespace {
 
 constexpr size_t kMaxReadyTargets = 24;
-constexpr int kSwsFlags = 1;  // SWS_FAST_BILINEAR.
-constexpr int kAvPixFmtYuv420p = 0;
 
 struct TargetKey {
   int32_t width = 0;
@@ -52,16 +43,6 @@ std::vector<ReadySlot> g_slots;
 uint64_t g_last_source_generation = 0;
 std::atomic<uint64_t> g_publish_count{0};
 std::atomic<bool> g_worker_started{false};
-
-struct SwsApi {
-  void *handle = nullptr;
-  FnSwsGetContext get_context = nullptr;
-  FnSwsScale scale = nullptr;
-  FnSwsFreeContext free_context = nullptr;
-};
-
-SwsApi g_sws_api;
-std::mutex g_sws_api_mutex;
 
 uint64_t now_ns() {
   struct timespec ts {};
@@ -95,33 +76,6 @@ bool IsSupportedReadyLayout(ReadyFrameLayout layout) {
 bool same_key(const TargetKey &key, int32_t width, int32_t height,
               ReadyFrameLayout layout) {
   return key.width == width && key.height == height && key.layout == layout;
-}
-
-bool LoadSwsApi() {
-  std::lock_guard<std::mutex> lock(g_sws_api_mutex);
-  if (g_sws_api.handle != nullptr) {
-    return g_sws_api.get_context != nullptr && g_sws_api.scale != nullptr &&
-           g_sws_api.free_context != nullptr;
-  }
-  g_sws_api.handle = dlopen("/data/camera/libffmpeg.so", RTLD_NOW | RTLD_LOCAL);
-  if (g_sws_api.handle == nullptr) {
-    g_sws_api.handle = dlopen("libffmpeg.so", RTLD_NOW | RTLD_LOCAL);
-  }
-  if (g_sws_api.handle == nullptr) {
-    LOGE("ReadyFrameCache: dlopen libffmpeg.so failed: %s", dlerror() ? dlerror() : "unknown");
-    return false;
-  }
-  g_sws_api.get_context = reinterpret_cast<FnSwsGetContext>(dlsym(g_sws_api.handle, "sws_getContext"));
-  g_sws_api.scale = reinterpret_cast<FnSwsScale>(dlsym(g_sws_api.handle, "sws_scale"));
-  g_sws_api.free_context = reinterpret_cast<FnSwsFreeContext>(dlsym(g_sws_api.handle, "sws_freeContext"));
-  const bool ok = g_sws_api.get_context != nullptr && g_sws_api.scale != nullptr &&
-                  g_sws_api.free_context != nullptr;
-  if (!ok) {
-    LOGE("ReadyFrameCache: missing swscale symbols get=%p scale=%p free=%p",
-         reinterpret_cast<void *>(g_sws_api.get_context), reinterpret_cast<void *>(g_sws_api.scale),
-         reinterpret_cast<void *>(g_sws_api.free_context));
-  }
-  return ok;
 }
 
 void compute_center_crop(int src_w, int src_h, int dst_w, int dst_h, int *crop_x,
@@ -195,33 +149,18 @@ bool build_ready_scaled_i420(int src_width, int src_height, const uint8_t *src_i
   const uint8_t *src_u = src_u_base + static_cast<size_t>(crop_y / 2) * src_cw + crop_x / 2;
   const uint8_t *src_v = src_v_base + static_cast<size_t>(crop_y / 2) * src_cw + crop_x / 2;
 
-  const uint8_t *src_data[4] = {src_y, src_u, src_v, nullptr};
-  const int src_linesize[4] = {src_width, src_cw, src_cw, 0};
-  uint8_t *dst_data[4] = {dst_y, dst_u, dst_v, nullptr};
-  const int dst_linesize[4] = {dst_width, dst_cw, dst_cw, 0};
-
-  // Prefer libyuv's I420 scaler.  It is much faster than swscale for large
-  // preview targets such as 3280x2464 and keeps the cameraserver write path
-  // smooth even when the player decodes a smaller prescaled source.
+  // Use libyuv's I420 scaler directly. It is much faster than creating a new
+  // SwsContext for each target frame and keeps this worker independent from
+  // FFmpeg at playback time.
   if (LibYuvI420Scale(src_y, src_width, src_u, src_cw, src_v, src_cw,
                       crop_w, crop_h, dst_y, dst_width, dst_u, dst_cw, dst_v,
                       dst_cw, dst_width, dst_height, 0)) {
     return true;
   }
 
-  if (!LoadSwsApi()) return false;
-  SwsContext *ctx = g_sws_api.get_context(crop_w, crop_h, kAvPixFmtYuv420p,
-                                          dst_width, dst_height, kAvPixFmtYuv420p,
-                                          kSwsFlags, nullptr, nullptr, nullptr);
-  if (ctx == nullptr) {
-    LOGE("ReadyFrameCache sws_getContext failed src=%dx%d crop=%dx%d dst=%dx%d",
-         src_width, src_height, crop_w, crop_h, dst_width, dst_height);
-    return false;
-  }
-  const int scaled = g_sws_api.scale(ctx, src_data, src_linesize, 0, crop_h, dst_data,
-                                     dst_linesize);
-  g_sws_api.free_context(ctx);
-  return scaled == dst_height;
+  LOGE("ReadyFrameCache libyuv I420Scale failed src=%dx%d crop=%dx%d dst=%dx%d",
+       src_width, src_height, crop_w, crop_h, dst_width, dst_height);
+  return false;
 }
 
 bool build_ready_frame_for_layout(int src_width, int src_height, const uint8_t *src_i420,
