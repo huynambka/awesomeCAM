@@ -31,9 +31,14 @@
     <string name="video_source_selected_format">Selected: %1$s</string>
     <string name="video_source_staging_format">Staging: %1$s</string>
     <string name="choose_video_button">Choose video</string>
+    <string name="source_mode_file">File</string>
+    <string name="source_mode_rtmp">RTMP live</string>
+    <string name="rtmp_url_hint">rtmp://host/app/stream-key</string>
+    <string name="save_rtmp_button">Save RTMP URL</string>
+    <string name="video_source_rtmp_name">RTMP livestream</string>
     <string name="m2_build_label">Build identity</string>
     <string name="m2_status_chip">Status</string>
     <string name="m2_live_chip">Live</string>
     <string name="m2_live_label">Live status</string>
-    <string name="m2_source_hint">Pick any video; awesomeCAM copies it into the native playback slot automatically.</string>
+    <string name="m2_source_hint">Choose either a prescaled local video or one RTMP livestream source. Only one source can run at a time.</string>
 </resources>

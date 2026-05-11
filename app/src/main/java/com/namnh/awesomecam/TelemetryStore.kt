@@ -182,9 +182,32 @@ object TelemetryStore {
             return "Camera target detected: $resolution fmt=$format"
         }
 
+        if (line.contains("RTMPDemuxer: opened stream")) {
+            Regex("""codec=(\S+) mime=(\S+) src=(\d+x\d+) fps=(\d+) source=(\S+)""")
+                .find(line)
+                ?.let {
+                    val (codec, mime, src, fps, source) = it.destructured
+                    return "RTMP source active: codec=$codec mime=$mime src=$src fps=$fps source=$source"
+                }
+        }
+
         val media = line.substringAfter("MediaCodecPlayer: ", missingDelimiterValue = "")
             .takeIf { it.isNotBlank() }
             ?: return null
+
+        Regex("""initial source=rtmp urlFile=(\S+) fpsCap=(\d+) live=1""")
+            .find(media)
+            ?.let {
+                val (urlFile, fpsCap) = it.destructured
+                return "Playback initial source: RTMP live urlFile=${urlFile.substringAfterLast('/')} fpsCap=$fpsCap"
+            }
+
+        Regex("""RTMP stream mime=(\S+) src=(\d+x\d+) out=(\d+x\d+) fps=(\d+) fpsCap=(\d+) source=(\S+)""")
+            .find(media)
+            ?.let {
+                val (mime, src, out, fps, fpsCap, source) = it.destructured
+                return "RTMP decoder active: mime=$mime src=$src out=$out fps=$fps fpsCap=$fpsCap source=$source"
+            }
 
         Regex("""initial input=(\S+) autoVariant=(\d+) fpsCap=(\d+) default=(\S+)""")
             .find(media)

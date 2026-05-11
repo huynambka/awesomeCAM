@@ -7,6 +7,9 @@ import android.os.Build
 import android.os.Bundle
 import android.provider.OpenableColumns
 import android.widget.Button
+import android.widget.EditText
+import android.widget.RadioButton
+import android.widget.RadioGroup
 import android.widget.TextView
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
@@ -22,6 +25,10 @@ class InjectorActivity : AppCompatActivity() {
     private lateinit var feedController: Mp4FeedController
     private lateinit var feedButton: Button
     private lateinit var selectedVideoText: TextView
+    private lateinit var sourceModeGroup: RadioGroup
+    private lateinit var fileSourceRadio: RadioButton
+    private lateinit var rtmpSourceRadio: RadioButton
+    private lateinit var rtmpUrlEditText: EditText
 
     private val chooseVideoLauncher = registerForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
         uri ?: return@registerForActivityResult
@@ -53,6 +60,12 @@ class InjectorActivity : AppCompatActivity() {
         feedController = Mp4FeedController(::appendStatus)
         feedButton = findViewById(R.id.feedButton)
         selectedVideoText = findViewById(R.id.selectedVideoText)
+        sourceModeGroup = findViewById(R.id.sourceModeGroup)
+        fileSourceRadio = findViewById(R.id.fileSourceRadio)
+        rtmpSourceRadio = findViewById(R.id.rtmpSourceRadio)
+        rtmpUrlEditText = findViewById(R.id.rtmpUrlEditText)
+        rtmpUrlEditText.setText(persistedRtmpUrl())
+        updateSourceModeControls(selectedSourceMode())
         updateFeedButton()
         updateSelectedVideoText()
 
@@ -65,9 +78,9 @@ class InjectorActivity : AppCompatActivity() {
                 "SELinux: runtime ksud policy apply; no sepolicy patcher module required\n" +
                 "Stage 1: $RUNTIME_DIR/$SHADOWHOOK_LIB_NAME\n" +
                 "Stage 2: $RUNTIME_DIR/$HOOK_ASSET (call main_hook)\n" +
-                "Player: $RUNTIME_DIR/$PLAYER_ASSET (MediaCodec) + FFmpeg prescale tool\n\n" +
+                "Player: $RUNTIME_DIR/$PLAYER_ASSET (MediaCodec) + FFmpeg prescale/RTMP demux tool\n\n" +
                 "Default playback variant: ${Mp4FeedController.DEFAULT_VIDEO_PATH}\n" +
-                "Video source: ${selectedVideoDisplayName()}",
+                "Video source: ${selectedSourceDisplayName()}",
         )
 
         findViewById<Button>(R.id.injectButton).setOnClickListener {
@@ -97,19 +110,31 @@ class InjectorActivity : AppCompatActivity() {
 
         feedButton.setOnClickListener {
             if (feedController.isRunning) {
-                appendStatus("Stopping MP4 feed")
+                appendStatus("Stopping video feed")
                 feedController.stop()
                 updateFeedButton()
             } else {
-                val sourceName = selectedVideoDisplayName()
-                appendStatus("Starting MP4 feed from $sourceName")
-                feedController.start(Mp4FeedController.DEFAULT_VIDEO_PATH, sourceName)
+                startSelectedFeed()
                 updateFeedButton()
             }
         }
 
         findViewById<Button>(R.id.chooseVideoButton).setOnClickListener {
+            persistSourceMode(SourceMode.FILE)
+            updateSourceModeControls(SourceMode.FILE)
             chooseVideoLauncher.launch(arrayOf("video/*"))
+        }
+
+        findViewById<Button>(R.id.saveRtmpButton).setOnClickListener {
+            val url = rtmpUrlEditText.text?.toString()?.trim().orEmpty()
+            if (!isValidRtmpUrl(url)) {
+                appendStatus("RTMP source error: URL must start with rtmp:// or rtmpt://")
+                return@setOnClickListener
+            }
+            persistRtmpUrl(url)
+            persistSourceMode(SourceMode.RTMP)
+            updateSourceModeControls(SourceMode.RTMP)
+            appendStatus("RTMP source saved: ${redactedRtmpUrl(url)}")
         }
 
         findViewById<Button>(R.id.resetButton).setOnClickListener {
@@ -152,7 +177,7 @@ class InjectorActivity : AppCompatActivity() {
     }
 
     private fun updateSelectedVideoText(displayName: String = selectedVideoDisplayName()) {
-        selectedVideoText.text = getString(R.string.video_source_selected_format, displayName)
+        selectedVideoText.text = getString(R.string.video_source_selected_format, selectedSourceDisplayName(displayName))
     }
 
     private fun setSelectedVideoStatus(displayName: String, statusRes: Int) {
@@ -171,6 +196,94 @@ class InjectorActivity : AppCompatActivity() {
             .edit()
             .putString(PREF_SELECTED_VIDEO_NAME, displayName)
             .apply()
+    }
+
+    private fun selectedSourceDisplayName(fileDisplayName: String = selectedVideoDisplayName()): String {
+        return when (selectedSourceMode()) {
+            SourceMode.FILE -> fileDisplayName
+            SourceMode.RTMP -> persistedRtmpUrl()
+                .takeIf { it.isNotBlank() }
+                ?.let { redactedRtmpUrl(it) }
+                ?: getString(R.string.video_source_rtmp_name)
+        }
+    }
+
+    private fun selectedSourceMode(): SourceMode {
+        val raw = getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+            .getString(PREF_SOURCE_MODE, SourceMode.FILE.value)
+        return SourceMode.fromValue(raw)
+    }
+
+    private fun persistSourceMode(mode: SourceMode) {
+        getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+            .edit()
+            .putString(PREF_SOURCE_MODE, mode.value)
+            .apply()
+    }
+
+    private fun persistedRtmpUrl(): String {
+        return getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+            .getString(PREF_RTMP_URL, null)
+            ?.takeIf { it.isNotBlank() }
+            ?: ""
+    }
+
+    private fun persistRtmpUrl(url: String) {
+        getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+            .edit()
+            .putString(PREF_RTMP_URL, url)
+            .apply()
+    }
+
+    private fun updateSourceModeControls(mode: SourceMode) {
+        sourceModeGroup.setOnCheckedChangeListener(null)
+        fileSourceRadio.isChecked = mode == SourceMode.FILE
+        rtmpSourceRadio.isChecked = mode == SourceMode.RTMP
+        sourceModeGroup.setOnCheckedChangeListener { _, checkedId ->
+            val selected = if (checkedId == R.id.rtmpSourceRadio) SourceMode.RTMP else SourceMode.FILE
+            persistSourceMode(selected)
+            updateSelectedVideoText()
+        }
+        updateSelectedVideoText()
+    }
+
+    private fun startSelectedFeed() {
+        when (selectedSourceMode()) {
+            SourceMode.FILE -> {
+                val sourceName = selectedVideoDisplayName()
+                appendStatus("Starting file feed from $sourceName")
+                feedController.start(Mp4FeedController.DEFAULT_VIDEO_PATH, sourceName)
+            }
+            SourceMode.RTMP -> {
+                val url = rtmpUrlEditText.text?.toString()?.trim().orEmpty()
+                if (!isValidRtmpUrl(url)) {
+                    appendStatus("RTMP source error: URL must start with rtmp:// or rtmpt://")
+                    return
+                }
+                persistRtmpUrl(url)
+                appendStatus("Starting RTMP feed from ${redactedRtmpUrl(url)}")
+                feedController.startRtmp(url, getString(R.string.video_source_rtmp_name))
+            }
+        }
+    }
+
+    private fun isValidRtmpUrl(url: String): Boolean {
+        return (url.startsWith("rtmp://", ignoreCase = true) ||
+            url.startsWith("rtmpt://", ignoreCase = true)) &&
+            !url.contains('\n') &&
+            !url.contains('\r')
+    }
+
+    private fun redactedRtmpUrl(url: String): String {
+        val schemeEnd = url.indexOf("://").takeIf { it > 0 } ?: return "rtmp://<redacted>"
+        val hostStart = schemeEnd + 3
+        val pathStart = url.indexOf('/', hostStart)
+        val scheme = url.substring(0, schemeEnd)
+        if (pathStart < 0) return "$scheme://${url.substring(hostStart).substringBefore('@').ifBlank { "<host>" }}/<redacted>"
+        val authority = url.substring(hostStart, pathStart).substringAfter('@')
+        val path = url.substring(pathStart + 1)
+        val app = path.substringBefore('/').takeIf { it.isNotBlank() } ?: "<app>"
+        return "$scheme://$authority/$app/<redacted>"
     }
 
     private fun handlePickedVideo(uri: Uri) {
@@ -204,6 +317,8 @@ class InjectorActivity : AppCompatActivity() {
                 persistSelectedVideoDisplayName(displayName)
                 appendStatus("Video source: \"$displayName\" is ready\n$output")
                 runOnUiThread {
+                    persistSourceMode(SourceMode.FILE)
+                    updateSourceModeControls(SourceMode.FILE)
                     updateSelectedVideoText(displayName)
                     updateFeedButton()
                 }
@@ -645,6 +760,8 @@ class InjectorActivity : AppCompatActivity() {
         private const val RUNTIME_SEPOLICY_FILE = "/data/camera/awesomecam_runtime_sepolicy.rule"
         private const val PREFS_NAME = "video_source"
         private const val PREF_SELECTED_VIDEO_NAME = "selected_video_display_name"
+        private const val PREF_SOURCE_MODE = "selected_source_mode"
+        private const val PREF_RTMP_URL = "rtmp_url"
         private val FFMPEG_LIB_NAMES = listOf(
             "libffmpeg.so",
             "libffmpegexe.so",
@@ -687,5 +804,16 @@ class InjectorActivity : AppCompatActivity() {
             allow su cameraserver binder { call transfer }
             allow cameraserver su fd use
         """.trimIndent()
+    }
+
+    private enum class SourceMode(val value: String) {
+        FILE("file"),
+        RTMP("rtmp");
+
+        companion object {
+            fun fromValue(value: String?): SourceMode {
+                return values().firstOrNull { it.value == value } ?: FILE
+            }
+        }
     }
 }

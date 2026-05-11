@@ -70,7 +70,7 @@ target_link_options(ffmpeg_packager PRIVATE -Wl,-z,max-page-size=16384)
 target_link_options(awesomecam_player PRIVATE -Wl,-z,max-page-size=16384 -Wl,-rpath,/data/camera)
 
 target_link_libraries(injector_helper ${log-lib} ${dl-lib} ${m-lib})
-target_link_libraries(awesomecam_player ${log-lib} ${dl-lib} ${android-lib} ${mediandk-lib})
+target_link_libraries(awesomecam_player ${log-lib} ${dl-lib} ${android-lib} ${mediandk-lib} ffmpeg::ffmpeg)
 target_link_libraries(hook shadowhook::shadowhook ${log-lib} ${dl-lib})
 target_link_libraries(streamclient ${log-lib} ${dl-lib})
 target_link_libraries(ffmpeg_packager ffmpeg::ffmpeg)

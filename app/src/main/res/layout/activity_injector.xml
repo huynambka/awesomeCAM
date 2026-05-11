@@ -119,6 +119,36 @@
                     android:textSize="16sp"
                     android:textStyle="bold" />
 
+                <RadioGroup
+                    android:id="@+id/sourceModeGroup"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="12dp"
+                    android:orientation="horizontal">
+
+                    <RadioButton
+                        android:id="@+id/fileSourceRadio"
+                        android:layout_width="0dp"
+                        android:layout_height="wrap_content"
+                        android:layout_weight="1"
+                        android:buttonTint="@color/miuix_brand"
+                        android:text="@string/source_mode_file"
+                        android:textColor="@color/miuix_text_primary"
+                        android:textSize="14sp"
+                        android:textStyle="bold" />
+
+                    <RadioButton
+                        android:id="@+id/rtmpSourceRadio"
+                        android:layout_width="0dp"
+                        android:layout_height="wrap_content"
+                        android:layout_weight="1"
+                        android:buttonTint="@color/miuix_brand"
+                        android:text="@string/source_mode_rtmp"
+                        android:textColor="@color/miuix_text_primary"
+                        android:textSize="14sp"
+                        android:textStyle="bold" />
+                </RadioGroup>
+
                 <androidx.appcompat.widget.AppCompatButton
                     android:id="@+id/chooseVideoButton"
                     android:layout_width="match_parent"
@@ -136,6 +166,44 @@
                     android:singleLine="true"
                     android:stateListAnimator="@null"
                     android:text="@string/choose_video_button"
+                    android:textAllCaps="false"
+                    android:textColor="@color/miuix_text_primary"
+                    android:textSize="14sp"
+                    android:textStyle="bold"
+                    app:backgroundTint="@null" />
+
+                <EditText
+                    android:id="@+id/rtmpUrlEditText"
+                    android:layout_width="match_parent"
+                    android:layout_height="48dp"
+                    android:layout_marginTop="12dp"
+                    android:background="@drawable/bg_miuix_outline_button"
+                    android:hint="@string/rtmp_url_hint"
+                    android:inputType="textUri"
+                    android:paddingStart="12dp"
+                    android:paddingEnd="12dp"
+                    android:singleLine="true"
+                    android:textColor="@color/miuix_text_primary"
+                    android:textColorHint="@color/miuix_text_tertiary"
+                    android:textSize="14sp" />
+
+                <androidx.appcompat.widget.AppCompatButton
+                    android:id="@+id/saveRtmpButton"
+                    android:layout_width="match_parent"
+                    android:layout_height="48dp"
+                    android:layout_marginTop="10dp"
+                    android:background="@drawable/bg_miuix_outline_button"
+                    android:backgroundTint="@null"
+                    android:ellipsize="end"
+                    android:gravity="center"
+                    android:includeFontPadding="false"
+                    android:minHeight="0dp"
+                    android:minWidth="0dp"
+                    android:paddingStart="10dp"
+                    android:paddingEnd="10dp"
+                    android:singleLine="true"
+                    android:stateListAnimator="@null"
+                    android:text="@string/save_rtmp_button"
                     android:textAllCaps="false"
                     android:textColor="@color/miuix_text_primary"
                     android:textSize="14sp"
